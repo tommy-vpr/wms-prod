@@ -1,0 +1,1493 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// AUTH & USERS
+// =============================================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password      String?
+  name          String?
+  image         String?
+  role          UserRole  @default(STAFF)
+  active        Boolean   @default(true)
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  assignedTasks       WorkTask[]
+  taskEvents          TaskEvent[]
+  completedTaskItems  TaskItem[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  packingImagesUploaded  PackingImage[]
+
+  // Receiving relations
+  receivingSessionsCounted   ReceivingSession[]     @relation("ReceivingCountedBy")
+  receivingSessionsLocked    ReceivingSession[]     @relation("ReceivingLockedBy")
+  receivingSessionsAssigned  ReceivingSession[]     @relation("ReceivingAssignedTo")
+  receivingSessionsApproved  ReceivingSession[]     @relation("ReceivingApprovedBy")
+  exceptionsReported         ReceivingException[]   @relation("ExceptionReporter")
+  exceptionsResolved         ReceivingException[]   @relation("ExceptionResolver")
+
+  // Cycle Count relations
+  cycleCountTasksAssigned    CycleCountTask[]    @relation("CycleCountAssignee")
+  cycleCountTasksCreated     CycleCountTask[]    @relation("CycleCountCreator")
+  cycleCountSessionsLocked   CycleCountSession[] @relation("CycleCountLocker")
+  cycleCountSessionsCounted  CycleCountSession[] @relation("CycleCountCounter")
+  cycleCountSessionsReviewed CycleCountSession[] @relation("CycleCountReviewer")
+  cycleCountAudits           CycleCountAudit[]
+  
+  // Adjustment relations
+  adjustmentsCreated         InventoryAdjustment[] @relation("AdjustmentCreator")
+  adjustmentsApproved        InventoryAdjustment[] @relation("AdjustmentApprover")
+
+  // Invoice relation
+  invoicesCreated   Invoice[]  @relation("InvoiceCreatedBy")
+  invoicesApproved  Invoice[]  @relation("InvoiceApprovedBy")
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  token     String    @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+// =============================================================================
+// PRODUCTS & INVENTORY
+// =============================================================================
+
+model Product {
+  id               String   @id @default(cuid())
+  sku              String   @unique
+  name             String
+  description      String?
+  brand            String?
+  category         String?
+  shopifyProductId String?  @unique
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  variants ProductVariant[]
+
+  @@index([brand])
+  @@index([category])
+  @@index([shopifyProductId])
+  @@map("products")
+}
+
+model ProductVariant {
+  id               String   @id @default(cuid())
+  productId        String
+  sku              String   @unique
+  upc              String?  @unique
+  barcode          String?
+  name             String
+  imageUrl         String?
+  shopifyVariantId String?  @unique
+  costPrice        Decimal? @db.Decimal(10, 2)
+  sellingPrice     Decimal? @db.Decimal(10, 2)
+  
+  // Single unit dimensions & weight
+  weight           Decimal?  @db.Decimal(8, 2)
+  weightUnit       String?   @default("oz")       // oz, lbs, g, kg
+  length           Decimal?  @db.Decimal(8, 2)
+  width            Decimal?  @db.Decimal(8, 2)
+  height           Decimal?  @db.Decimal(8, 2)
+  dimensionUnit    String?   @default("in")        // in, cm
+
+  // Master case
+  mcQuantity       Int?                             // units per case
+  mcWeight         Decimal?  @db.Decimal(8, 2)
+  mcWeightUnit     String?   @default("lbs")
+  mcLength         Decimal?  @db.Decimal(8, 2)
+  mcWidth          Decimal?  @db.Decimal(8, 2)
+  mcHeight         Decimal?  @db.Decimal(8, 2)
+  mcDimensionUnit  String?   @default("in")
+
+  // Track if this variant requires lot/expiry tracking
+  shippingPackageItems  ShippingPackageItem[]
+  trackLots        Boolean  @default(false)
+  trackExpiry      Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  product        Product          @relation(fields: [productId], references: [id])
+  orderItems     OrderItem[]
+  inventoryUnits InventoryUnit[]
+  taskItems      TaskItem[]
+  allocations    Allocation[]
+
+  receivingLines  ReceivingLine[]
+
+  // Cycle Count relations
+  cycleCountLines       CycleCountLine[]
+  inventoryAdjustments  InventoryAdjustment[]
+
+  // Discrepancy
+  inventoryDiscrepancies InventoryDiscrepancy[]
+
+  // Bin 
+  pickBinItems PickBinItem[]
+
+  // Order Package Items
+  orderPackageItems OrderPackageItem[]
+
+  // Invoice
+  invoiceItems      InvoiceItem[]
+
+  @@index([upc])
+  @@index([barcode])
+  @@index([shopifyVariantId])
+  @@map("product_variants")
+}
+
+model Location {
+  id           String       @id @default(cuid())
+  name         String       @unique
+  barcode      String?      @unique
+  type         LocationType @default(GENERAL)
+  zone         String?
+  aisle        String?
+  rack         String?
+  shelf        String?
+  bin          String?
+  // For pick path optimization
+  pickSequence Int?
+  isPickable   Boolean      @default(true)
+  active       Boolean      @default(true)
+  
+  // Cycle count flags (ADD THESE 4 FIELDS)
+  needsCycleCount    Boolean   @default(false)
+  cycleCountPriority String?   // HIGH, MEDIUM, LOW
+  cycleCountReason   String?
+  lastCountedAt      DateTime?
+  
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  inventoryUnits InventoryUnit[]
+  taskItems      TaskItem[]
+  allocations    Allocation[]
+
+  receivingSessions  ReceivingSession[]
+
+  // Cycle Count relations
+  cycleCountSessions    CycleCountSession[]
+  inventoryAdjustments  InventoryAdjustment[]
+
+  inventoryDiscrepancies InventoryDiscrepancy[]
+
+  // Invoice
+  invoiceItems      InvoiceItem[]
+
+  @@index([barcode])
+  @@index([type])
+  @@index([zone, pickSequence])
+  @@index([needsCycleCount])  // ADD INDEX for queries
+  @@map("locations")
+}
+
+// =============================================================================
+// INVENTORY UNITS (Replaces simple Inventory table)
+// =============================================================================
+
+// Individual inventory units with full tracking
+// This replaces the old aggregate Inventory table
+model InventoryUnit {
+  id               String          @id @default(cuid())
+  productVariantId String
+  locationId       String
+  quantity         Int             @default(0)
+  status           InventoryStatus @default(AVAILABLE)
+  // Lot tracking
+  lotNumber        String?
+  expiryDate       DateTime?
+  // Receipt tracking
+  receivedAt       DateTime        @default(now())
+  receivedFrom     String?         // PO number, ASN, etc.
+  // Cost tracking
+  unitCost         Decimal?        @db.Decimal(10, 2)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  location       Location       @relation(fields: [locationId], references: [id])
+  allocations    Allocation[]
+
+  // Cycle Count relations
+  cycleCountLines       CycleCountLine[]
+
+  @@index([productVariantId, status])
+  @@index([locationId])
+  @@index([lotNumber])
+  @@index([expiryDate])
+  @@map("inventory_units")
+}
+
+// =============================================================================
+// ALLOCATIONS (NEW - Critical for inventory reservation tracking)
+// =============================================================================
+
+model Allocation {
+  id               String           @id @default(cuid())
+  inventoryUnitId  String
+  orderId          String
+  orderItemId      String?
+  productVariantId String
+  locationId       String
+  quantity         Int
+  lotNumber        String?
+  status           AllocationStatus @default(ALLOCATED)
+  allocatedAt      DateTime         @default(now())
+  releasedAt       DateTime?
+  pickedAt         DateTime?
+
+  inventoryUnit  InventoryUnit  @relation(fields: [inventoryUnitId], references: [id])
+  order          Order          @relation(fields: [orderId], references: [id])
+  orderItem      OrderItem?     @relation(fields: [orderItemId], references: [id])
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  location       Location       @relation(fields: [locationId], references: [id])
+  taskItem       TaskItem?      @relation(fields: [taskItemId], references: [id])
+  taskItemId     String?        @unique
+
+  @@index([orderId])
+  @@index([inventoryUnitId])
+  @@index([status])
+  @@map("allocations")
+}
+
+// =============================================================================
+// ORDERS
+// =============================================================================
+
+model Order {
+  id               String        @id @default(cuid())
+  orderNumber      String        @unique
+  shopifyOrderId   String?       @unique
+  // Customer info
+  customerId       String?
+  customerName     String
+  customerEmail    String?
+  shippingAddress  Json
+  billingAddress   Json?
+  // Shopify raw data
+  shopifyLineItems Json?
+  // Status tracking
+  status           OrderStatus   @default(PENDING)
+  paymentStatus   PaymentStatus @default(PENDING)
+  priority        Priority      @default(STANDARD)
+  // Hold management
+  holdReason      String?
+  holdAt          DateTime?
+  holdBy          String?
+  // Item matching
+  unmatchedItems  Int           @default(0)  // Count of items with matched=false
+  // Financials
+  totalAmount     Decimal       @db.Decimal(10, 2)
+  // Shipping
+  warehouseId     String?
+  trackingNumber  String?
+  shippedAt       DateTime?
+  shippingPackages  ShippingPackage[]
+  packingImages   PackingImage[]
+  // Timestamps
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  // Bin
+  pickBins  PickBin[] 
+  // Order Packages
+  orderPackages   OrderPackage[]
+
+  items       OrderItem[]
+  taskItems   TaskItem[]
+  allocations Allocation[]
+  shippingLabels ShippingLabel[]   // ← NEW: fulfillment pipeline
+
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([status, paymentStatus, holdReason])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id                                String   @id @default(cuid())
+  orderId                           String
+  productVariantId                  String?  // Nullable - may not match a variant
+  sku                               String
+  quantity                          Int
+  quantityAllocated                 Int      @default(0)
+  quantityPicked                    Int      @default(0)
+  quantityShipped                   Int      @default(0)
+
+  unitPrice                         Decimal  @db.Decimal(10, 2)
+  totalPrice                        Decimal? @db.Decimal(10, 2)
+  // Matching status
+  matched                           Boolean  @default(true)  // false if SKU not found
+  matchError                        String?  // "SKU not found: XYZ"
+  // Shopify references
+  shopifyLineItemId                 String?
+  shopifyFulfillmentOrderLineItemId String?
+
+  order          Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productVariant ProductVariant? @relation(fields: [productVariantId], references: [id])
+  taskItems      TaskItem[]
+  allocations    Allocation[]
+
+  @@index([orderId])
+  @@index([matched])
+  @@index([shopifyLineItemId])
+  @@map("order_items")
+}
+
+model PackingImage {
+  id          String   @id @default(cuid())
+  orderId     String
+  taskId      String?
+  url         String
+  filename    String
+  size        Int
+  contentType String   @default("image/jpeg")
+  uploadedBy  String
+  reference   String?
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  order       Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  task        WorkTask? @relation(fields: [taskId], references: [id])
+  pickBinId String?
+  pickBin   PickBin? @relation(fields: [pickBinId], references: [id])
+
+  uploader    User      @relation(fields: [uploadedBy], references: [id])
+
+  @@index([orderId])
+  @@index([taskId])
+  @@index([pickBinId])  // ← ADD
+  @@index([uploadedBy])
+  @@map("packing_images")
+}
+
+// =============================================================================
+// NEW: SHIPPING LABELS (fulfillment pipeline)
+// =============================================================================
+
+model ShippingLabel {
+  id                String              @id @default(cuid())
+  orderId           String
+  shipEngineId      String?             @unique
+  shipmentId        String?
+  carrier           String
+  service           String
+  trackingNumber    String              @unique
+  trackingUrl       String?
+  rate              Decimal             @db.Decimal(10, 2)
+  currency          String              @default("USD")
+  estimatedDays     Int?
+  estimatedDelivery DateTime?
+  labelUrl          String?
+  labelFormat       String?
+  weight            Decimal?            @db.Decimal(8, 2)
+  weightUnit        String              @default("ounce")
+  dimensions        Json?
+  status            ShippingLabelStatus @default(CREATED)
+  voidedAt          DateTime?
+  rawResponse       Json?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@index([trackingNumber])
+  @@index([shipEngineId])
+  @@map("shipping_labels")
+}
+
+// NEW: Shipping label status enum
+enum ShippingLabelStatus {
+  CREATED
+  PURCHASED
+  VOIDED
+  ERROR
+}
+
+model ShippingPackage {
+  id             String   @id @default(cuid())
+  orderId        String
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  carrierCode    String
+  serviceCode    String
+  packageCode    String
+
+  trackingNumber String?
+  labelUrl       String?  @db.Text
+  shipEngineId   String?
+
+  cost           Decimal  @default(0) @db.Decimal(10, 2)
+  currency       String   @default("USD")
+
+  weight         Decimal? @db.Decimal(10, 2)
+  dimensions     Json?
+
+  voidedAt       DateTime?
+  shippedAt      DateTime?
+
+  items          ShippingPackageItem[]
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([trackingNumber])
+}
+
+model ShippingPackageItem {
+  id              String          @id @default(cuid())
+  packageId       String
+  shippingPackage ShippingPackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+
+  productName     String
+  sku             String
+  quantity        Int
+  unitPrice       Decimal         @db.Decimal(10, 2)
+
+  productVariantId String?
+  productVariant   ProductVariant? @relation(fields: [productVariantId], references: [id])
+
+  @@index([packageId])
+}
+
+// =============================================================================
+// NEW: FULFILLMENT EVENTS (fulfillment pipeline - SSE replay + audit)
+// =============================================================================
+
+model FulfillmentEvent {
+  id            String   @id @default(cuid())
+  orderId       String?
+  type          String
+  payload       Json
+  correlationId String?
+  userId        String?
+  processed     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([type])
+  @@index([orderId])
+  @@index([createdAt])
+  @@index([correlationId])
+  @@map("fulfillment_events")
+}
+
+// =============================================================================
+// WORK TASKS
+// =============================================================================
+
+model WorkTask {
+  id             String          @id @default(cuid())
+  taskNumber     String          @unique
+  type           WorkTaskType
+  status         WorkTaskStatus  @default(PENDING)
+  priority       Int             @default(0)
+  idempotencyKey String?         @unique
+  // Assignment
+  assignedTo     String?
+  assignedAt     DateTime?
+  // Progress tracking
+  startedAt      DateTime?
+  completedAt    DateTime?
+  // Block tracking
+  blockReason    WorkTaskBlockReason?
+  blockedAt      DateTime?
+  // Orders in this task (for batch picking)
+  orderIds       String[]
+  totalOrders    Int
+  completedOrders Int            @default(0)
+  // Packing fields (for PACKING tasks)
+  packingImages   PackingImage[]
+  packedWeight     Decimal?  @db.Decimal(8, 2)
+  packedWeightUnit String?   @default("ounce")
+  packedDimensions Json?
+  verifiedAt       DateTime?
+  verifiedBy       String?
+  // Items tracking
+  totalItems     Int
+  completedItems Int             @default(0)
+  shortItems     Int             @default(0)
+  skippedItems   Int             @default(0)
+  // Metadata
+  notes          String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  // Bin 
+  pickBins  PickBin[] 
+
+  assignedUser User?       @relation(fields: [assignedTo], references: [id])
+  taskItems    TaskItem[]
+  events       TaskEvent[]
+
+  receivingSession  ReceivingSession? @relation("ReceivingPutaway")
+
+  @@index([type, status])
+  @@index([assignedTo])
+  @@index([status, priority])
+  @@map("work_tasks")
+}
+
+model TaskItem {
+  id               String             @id @default(cuid())
+  taskId           String
+  orderId          String?
+  orderItemId      String?
+  productVariantId String?
+  locationId       String?
+  allocationId     String?            @unique
+  // Pick sequence (for optimized path)
+  sequence         Int
+  // Quantities
+  quantityRequired Int
+  quantityCompleted Int               @default(0)
+  // Status
+  status           WorkTaskItemStatus @default(PENDING)
+  // Completion tracking
+  completedBy      String?
+  completedAt      DateTime?
+  // Short pick details
+  shortReason      String?
+  // Scan verification
+  locationScanned  Boolean            @default(false)
+  itemScanned      Boolean            @default(false)
+  // Timestamps
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  task            WorkTask        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  order           Order?           @relation(fields: [orderId], references: [id])
+  orderItem       OrderItem?      @relation(fields: [orderItemId], references: [id])
+  productVariant  ProductVariant? @relation(fields: [productVariantId], references: [id])
+  location        Location?       @relation(fields: [locationId], references: [id])
+  completedByUser User?           @relation(fields: [completedBy], references: [id])
+  allocation      Allocation?
+
+  @@index([taskId, sequence])
+  @@index([orderId])
+  @@index([status])
+  @@map("task_items")
+}
+
+model TaskEvent {
+  id        String            @id @default(cuid())
+  taskId    String
+  eventType WorkTaskEventType
+  userId    String?
+  // Event details
+  taskItemId String?
+  data      Json?
+  createdAt DateTime          @default(now())
+
+  task WorkTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User?    @relation(fields: [userId], references: [id])
+
+  @@index([taskId])
+  @@index([taskId, eventType])
+  @@map("task_events")
+}
+
+// =============================================================================
+// INFRASTRUCTURE
+// =============================================================================
+
+model JobRecord {
+  id          String    @id @default(cuid())
+  jobId       String    @unique
+  queue       String
+  name        String
+  data        Json
+  status      String
+  result      Json?
+  error       String?
+  attempts    Int       @default(0)
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([queue, status])
+  @@map("job_records")
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  userId        String?
+  action        String
+  entityType    String
+  entityId      String
+  changes       Json?
+  correlationId String?  // For tracing across operations
+  createdAt     DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([correlationId])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  message   String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@map("notifications")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  STAFF
+  READONLY
+}
+
+enum InventoryStatus {
+  AVAILABLE
+  RESERVED
+  PICKED
+  DAMAGED
+  IN_TRANSIT
+  QUARANTINE
+}
+
+enum AllocationStatus {
+  PENDING
+  ALLOCATED
+  PARTIALLY_PICKED
+  PICKED
+  RELEASED
+  CANCELLED
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  READY_TO_PICK
+  ALLOCATED
+  PARTIALLY_ALLOCATED  // Some items allocated, some backordered
+  BACKORDERED          // No inventory available
+  PICKING
+  PICKED
+  PACKING
+  PACKED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  ON_HOLD
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  PAID
+  PARTIALLY_REFUNDED
+  REFUNDED
+  FAILED
+}
+
+enum Priority {
+  STANDARD
+  RUSH
+  EXPRESS
+}
+
+enum LocationType {
+  RECEIVING
+  STORAGE
+  PICKING
+  PACKING
+  SHIPPING
+  RETURNS
+  QUARANTINE
+  GENERAL
+}
+
+enum WorkTaskType {
+  PICKING
+  PACKING
+  SHIPPING
+  RECEIVING
+  PUTAWAY
+  CYCLE_COUNT
+  REPLENISHMENT
+  QC
+}
+
+enum WorkTaskStatus {
+  PENDING
+  ASSIGNED
+  IN_PROGRESS
+  BLOCKED
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum WorkTaskItemStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  SKIPPED
+  SHORT
+}
+
+enum WorkTaskBlockReason {
+  SHORT_PICK
+  LOCATION_EMPTY
+  DAMAGED_INVENTORY
+  PICKER_TIMEOUT
+  SUPERVISOR_HOLD
+  EQUIPMENT_ISSUE
+  SYSTEM_ERROR
+}
+
+enum WorkTaskEventType {
+  TASK_CREATED
+  TASK_ASSIGNED
+  TASK_STARTED
+  TASK_PAUSED
+  TASK_RESUMED
+  TASK_BLOCKED
+  TASK_UNBLOCKED
+  TASK_COMPLETED
+  TASK_CANCELLED
+  ITEM_SCANNED
+  ITEM_COMPLETED
+  ITEM_SKIPPED
+  ITEM_SHORT
+  LOCATION_VERIFIED
+}
+
+// =============================================================================
+// RECEIVING
+// =============================================================================
+
+model ReceivingSession {
+  id                  String           @id @default(cuid())
+  poId                String           // External PO ID (Inventory Planner)
+  poReference         String           // Human readable: PO-2024-001
+  vendor              String?
+  
+  status              ReceivingStatus  @default(IN_PROGRESS)
+  version             Int              @default(1)  // Optimistic locking
+  
+  // Session locking (prevent concurrent edits)
+  lockedBy            String?
+  lockedAt            DateTime?
+  
+  // Workflow tracking
+  countedBy           String
+  countedAt           DateTime         @default(now())
+  submittedAt         DateTime?
+  
+  // Approval
+  assignedTo          String?
+  approvedBy          String?
+  approvedAt          DateTime?
+  rejectionReason     String?
+  
+  // Location
+  receivingLocationId String?
+  
+  // Results
+  putawayTaskId       String?          @unique
+  
+  // Idempotency
+  idempotencyKey      String?          @unique
+  
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  lineItems           ReceivingLine[]
+  exceptions          ReceivingException[]
+  countedByUser       User             @relation("ReceivingCountedBy", fields: [countedBy], references: [id])
+  lockedByUser        User?            @relation("ReceivingLockedBy", fields: [lockedBy], references: [id])
+  assignedToUser      User?            @relation("ReceivingAssignedTo", fields: [assignedTo], references: [id])
+  approvedByUser      User?            @relation("ReceivingApprovedBy", fields: [approvedBy], references: [id])
+  receivingLocation   Location?        @relation(fields: [receivingLocationId], references: [id])
+  putawayTask         WorkTask?        @relation("ReceivingPutaway", fields: [putawayTaskId], references: [id])
+
+  @@index([poId])
+  @@index([status])
+  @@index([countedBy])
+  @@index([submittedAt])
+  @@index([lockedBy, lockedAt])
+  @@map("receiving_sessions")
+}
+
+model ReceivingLine {
+  id               String           @id @default(cuid())
+  sessionId        String
+  sku              String
+  productName      String
+  productVariantId String?
+  
+  // Quantities
+  quantityExpected Int              @default(0)
+  quantityCounted  Int              @default(0)
+  quantityDamaged  Int              @default(0)
+  variance         Int?
+  
+  // Lot/batch tracking
+  lotNumber        String?
+  expiryDate       DateTime?
+  
+  // Generated barcode (for products without UPC)
+  generatedBarcode String?
+  
+  // Scan tracking
+  lastScannedAt    DateTime?
+  scanCount        Int              @default(0)
+  
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  session          ReceivingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  productVariant   ProductVariant?  @relation(fields: [productVariantId], references: [id])
+
+  @@unique([sessionId, sku])
+  @@index([productVariantId])
+  @@map("receiving_lines")
+}
+
+model ReceivingException {
+  id          String                 @id @default(cuid())
+  sessionId   String
+  lineId      String?
+  type        ReceivingExceptionType
+  quantity    Int
+  notes       String?
+  imageUrl    String?                // Photo evidence
+  reportedBy  String
+  resolvedBy  String?
+  resolvedAt  DateTime?
+  
+  createdAt   DateTime               @default(now())
+
+  session     ReceivingSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  reporter    User                   @relation("ExceptionReporter", fields: [reportedBy], references: [id])
+  resolver    User?                  @relation("ExceptionResolver", fields: [resolvedBy], references: [id])
+
+  @@index([sessionId])
+  @@map("receiving_exceptions")
+}
+
+enum ReceivingStatus {
+  IN_PROGRESS
+  SUBMITTED
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum ReceivingExceptionType {
+  DAMAGED
+  WRONG_ITEM
+  MISSING
+  OVERAGE
+  QUALITY_ISSUE
+  OTHER
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cycle Count
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CycleCountTask {
+  id              String   @id @default(cuid())
+  taskNumber      String   @unique // CC-2024-001
+  name            String?  // "Zone A Weekly Count"
+  description     String?
+  
+  // Selection criteria
+  type            CycleCountType @default(LOCATION)
+  locationIds     String[] // Specific locations to count
+  zoneId          String?  // Or count entire zone
+  skuFilter       String?  // SKU pattern filter
+  abcClass        String?  // A, B, C classification
+  
+  // Options
+  blindCount      Boolean  @default(false) // Hide expected qty from counter
+  includeZeroQty  Boolean  @default(true)  // Include items with 0 expected
+  priority        Int      @default(0)     // Higher = more urgent
+  
+  // Schedule
+  scheduledDate   DateTime?
+  dueDate         DateTime?
+  
+  // Assignment
+  assignedToId    String?
+  assignedTo      User?    @relation("CycleCountAssignee", fields: [assignedToId], references: [id])
+  createdById     String
+  createdBy       User     @relation("CycleCountCreator", fields: [createdById], references: [id])
+  
+  // Status
+  status          CycleCountTaskStatus @default(PENDING)
+  
+  // Relations
+  sessions        CycleCountSession[]
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([status])
+  @@index([assignedToId])
+  @@index([scheduledDate])
+  @@map("cycle_count_tasks")
+}
+
+model CycleCountSession {
+  id              String   @id @default(cuid())
+  
+  // Parent task (optional - can be ad-hoc count)
+  taskId          String?
+  task            CycleCountTask? @relation(fields: [taskId], references: [id])
+  
+  // Location being counted
+  locationId      String
+  location        Location @relation(fields: [locationId], references: [id])
+  
+  // Options (copied from task or set for ad-hoc)
+  blindCount      Boolean  @default(false)
+  
+  // Locking (same as receiving)
+  version         Int      @default(1)
+  lockedBy        String?
+  lockedAt        DateTime?
+  lockedByUser    User?    @relation("CycleCountLocker", fields: [lockedBy], references: [id])
+  
+  // Workflow
+  status          CycleCountSessionStatus @default(IN_PROGRESS)
+  countedById     String
+  countedBy       User     @relation("CycleCountCounter", fields: [countedById], references: [id])
+  startedAt       DateTime @default(now())
+  submittedAt     DateTime?
+  
+  // Review
+  reviewedById    String?
+  reviewedBy      User?    @relation("CycleCountReviewer", fields: [reviewedById], references: [id])
+  reviewedAt      DateTime?
+  reviewNotes     String?
+  
+  // Results
+  totalExpected   Int      @default(0)
+  totalCounted    Int      @default(0)
+  varianceCount   Int      @default(0) // Number of lines with variance
+  
+  // Relations
+  lineItems       CycleCountLine[]
+  auditLogs       CycleCountAudit[]
+  adjustments     InventoryAdjustment[]
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([taskId])
+  @@index([locationId])
+  @@index([status])
+  @@index([countedById])
+  @@map("cycle_count_sessions")
+}
+
+model CycleCountLine {
+  id                String   @id @default(cuid())
+  sessionId         String
+  session           CycleCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  // Product
+  productVariantId  String
+  productVariant    ProductVariant @relation(fields: [productVariantId], references: [id])
+  sku               String
+  productName       String
+  
+  // Inventory unit being counted (if exists)
+  inventoryUnitId   String?
+  inventoryUnit     InventoryUnit? @relation(fields: [inventoryUnitId], references: [id])
+  
+  // Quantities
+  systemQty         Int      // Expected from system
+  countedQty        Int?     // What was counted (null = not counted yet)
+  variance          Int?     // countedQty - systemQty
+  
+  // Lot/Expiry tracking
+  lotNumber         String?
+  expiryDate        DateTime?
+  
+  // Status
+  status            CycleCountLineStatus @default(PENDING)
+  isUnexpected      Boolean  @default(false) // Item found but not expected
+  
+  // Notes
+  notes             String?
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([sessionId, productVariantId, lotNumber])
+  @@index([sessionId])
+  @@index([sku])
+  @@map("cycle_count_lines")
+}
+
+model CycleCountAudit {
+  id              String   @id @default(cuid())
+  sessionId       String
+  session         CycleCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  action          String   // SESSION_STARTED, ITEM_COUNTED, SUBMITTED, APPROVED, etc.
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  
+  lineId          String?  // Optional - for line-level actions
+  data            Json?    // Additional context
+  
+  createdAt       DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([userId])
+  @@map("cycle_count_audits")
+}
+
+model InventoryAdjustment {
+  id                String   @id @default(cuid())
+  adjustmentNumber  String   @unique // ADJ-2024-001
+  
+  // Source
+  reason            AdjustmentReason
+  sourceType        String   // CYCLE_COUNT, MANUAL, RECEIVING, etc.
+  sourceId          String?  // CycleCountSession ID, etc.
+  cycleCountSession CycleCountSession? @relation(fields: [sourceId], references: [id])
+  
+  // What's being adjusted
+  productVariantId  String
+  productVariant    ProductVariant @relation(fields: [productVariantId], references: [id])
+  locationId        String
+  location          Location @relation(fields: [locationId], references: [id])
+  inventoryUnitId   String?
+  
+  // Quantities
+  previousQty       Int
+  adjustedQty       Int
+  changeQty         Int      // adjustedQty - previousQty
+  
+  // Lot tracking
+  lotNumber         String?
+  
+  // Approval
+  status            AdjustmentStatus @default(PENDING)
+  createdById       String
+  createdBy         User     @relation("AdjustmentCreator", fields: [createdById], references: [id])
+  approvedById      String?
+  approvedBy        User?    @relation("AdjustmentApprover", fields: [approvedById], references: [id])
+  approvedAt        DateTime?
+  
+  notes             String?
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([productVariantId])
+  @@index([locationId])
+  @@index([status])
+  @@map("inventory_adjustments")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum CycleCountType {
+  LOCATION    // Count specific locations
+  ZONE        // Count entire zone
+  SKU         // Count specific SKUs across locations
+  ABC         // Count by ABC classification
+  AD_HOC      // One-off count
+}
+
+enum CycleCountTaskStatus {
+  PENDING     // Not started
+  IN_PROGRESS // Being counted
+  COMPLETED   // All locations counted
+  CANCELLED
+}
+
+enum CycleCountSessionStatus {
+  IN_PROGRESS // Counting
+  SUBMITTED   // Awaiting review
+  APPROVED    // Reviewed & adjustments created
+  REJECTED    // Recount required
+}
+
+enum CycleCountLineStatus {
+  PENDING     // Not counted yet
+  COUNTED     // Has count
+  VERIFIED    // Barcode verified (like receiving)
+  SKIPPED     // Intentionally skipped
+}
+
+enum AdjustmentReason {
+  CYCLE_COUNT
+  DAMAGED
+  LOST
+  FOUND
+  CORRECTION
+  RECEIVING_VARIANCE
+  SHIPPING_VARIANCE
+  OTHER
+}
+
+enum AdjustmentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// =============================================================================
+// PICK/PACK BIN
+// =============================================================================
+
+model PickBin {
+  id          String        @id @default(cuid())
+  binNumber   String        @unique
+  barcode     String        @unique
+  
+  orderId     String
+  order       Order         @relation(fields: [orderId], references: [id])
+  
+  pickTaskId  String?
+  pickTask    WorkTask?     @relation(fields: [pickTaskId], references: [id])
+  
+  status      PickBinStatus @default(PICKING)
+  
+  items       PickBinItem[]
+  
+  // Label
+  labelZpl      String?     @db.Text
+  labelPrintedAt DateTime?
+  
+  // Tracking
+  pickedBy    String?
+  pickedAt    DateTime?
+  packedBy    String?
+  packedAt    DateTime?
+
+  packingImages PackingImage[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([orderId])
+  @@index([barcode])
+  @@index([status])
+}
+
+model PickBinItem {
+  id              String   @id @default(cuid())
+  pickBinId       String
+  pickBin         PickBin  @relation(fields: [pickBinId], references: [id], onDelete: Cascade)
+  
+  productVariantId String
+  productVariant   ProductVariant @relation(fields: [productVariantId], references: [id])
+  
+  sku             String
+  quantity        Int
+  
+  verifiedQty     Int      @default(0)
+  verifiedAt      DateTime?
+  verifiedBy      String?
+  
+  createdAt       DateTime @default(now())
+  
+  @@index([pickBinId])
+}
+
+model InventoryDiscrepancy {
+  id                String   @id @default(cuid())
+  type              String   // SHORT_PICK, CYCLE_COUNT, ADJUSTMENT
+  
+  productVariantId  String
+  productVariant    ProductVariant @relation(fields: [productVariantId], references: [id])
+  
+  locationId        String
+  location          Location @relation(fields: [locationId], references: [id])
+  
+  expectedQty       Int
+  actualQty         Int
+  variance          Int
+  
+  orderId           String?
+  taskItemId        String?
+  
+  reportedBy        String?
+  status            String   @default("PENDING_REVIEW") // PENDING_REVIEW, RESOLVED, DISMISSED
+  resolvedBy        String?
+  resolvedAt        DateTime?
+  notes             String?  @db.Text
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  @@index([locationId])
+  @@index([productVariantId])
+  @@index([status])
+}
+
+model FulfillmentMetric {
+  id              String   @id @default(cuid())
+  type            String   // PICKING, PACKING, SHIPPING
+  
+  taskId          String?
+  taskNumber      String?
+  orderId         String?
+  orderNumber     String?
+  userId          String?
+  
+  itemCount       Int
+  shortCount      Int      @default(0)
+  
+  startedAt       DateTime
+  completedAt     DateTime
+  durationSeconds Int
+  itemsPerMinute  Float
+  
+  createdAt       DateTime @default(now())
+  
+  @@index([userId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model UserPerformance {
+  id              String   @id @default(cuid())
+  userId          String
+  metricType      String   // PICKING, PACKING
+  
+  avgItemsPerMinute Float  @default(0)
+  totalItems        Int    @default(0)
+  totalShorts       Int    @default(0)
+  taskCount         Int    @default(0)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@unique([userId, metricType])
+  @@index([userId])
+}
+
+enum PickBinStatus {
+  PICKING
+  STAGED
+  PACKING
+  COMPLETED
+  CANCELLED
+}
+
+// =============================================================================
+// ORDER PACKAGES (Box recommendation + packing persistence)
+// =============================================================================
+
+model OrderPackage {
+  id              String             @id @default(cuid())
+  orderId         String
+  order           Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  
+  sequence        Int                // 1, 2, 3...
+  boxId           String?            // "small-box", "usps-flat-medium"
+  boxLabel        String?            // "Small Box (8x6x4)"
+  
+  // Dimensions (from box definition or manual override)
+  length          Decimal?           @db.Decimal(8, 2)
+  width           Decimal?           @db.Decimal(8, 2)
+  height          Decimal?           @db.Decimal(8, 2)
+  dimensionUnit   String?            @default("in")
+  
+  // Weight
+  estimatedWeight Decimal?           @db.Decimal(8, 2)  // sum of item weights
+  actualWeight    Decimal?           @db.Decimal(8, 2)   // packer override
+  weightUnit      String?            @default("oz")
+  
+  status          OrderPackageStatus @default(DRAFT)
+  
+  items           OrderPackageItem[]
+  
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  
+  @@index([orderId])
+  @@map("order_packages")
+}
+
+model OrderPackageItem {
+  id               String          @id @default(cuid())
+  orderPackageId   String
+  orderPackage     OrderPackage    @relation(fields: [orderPackageId], references: [id], onDelete: Cascade)
+  
+  productVariantId String
+  productVariant   ProductVariant  @relation(fields: [productVariantId], references: [id])
+  
+  sku              String
+  quantity         Int
+  unitWeight       Decimal?        @db.Decimal(8, 2)  // snapshot from variant at time of recommendation
+  unitWeightUnit   String?
+  
+  createdAt        DateTime        @default(now())
+  
+  @@index([orderPackageId])
+  @@map("order_package_items")
+}
+
+enum OrderPackageStatus {
+  DRAFT
+  PACKED
+  SHIPPED
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vendor Invoice
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD to bottom of schema.prisma (before closing)
+
+model Invoice {
+  id              String        @id @default(cuid())
+  invoiceNumber   String        @unique // INV-2026-001
+  vendor          String
+  status          InvoiceStatus @default(DRAFT)
+
+  // Uploaded vendor invoice image (GCS URL)
+  imageUrl        String?
+  imageFilename   String?
+
+  // Totals (computed on save)
+  totalItems      Int           @default(0)
+  totalQuantity   Int           @default(0)
+  totalCost       Decimal       @default(0) @db.Decimal(10, 2)
+
+  // Tax & Fees (manual input)
+  tax             Decimal       @default(0) @db.Decimal(10, 2)
+  fees            Decimal       @default(0) @db.Decimal(10, 2)
+  grandTotal      Decimal       @default(0) @db.Decimal(10, 2) // totalCost + tax + fees
+
+  notes           String?
+
+  // Workflow
+  createdBy       String
+  submittedAt     DateTime?
+  approvedBy      String?
+  approvedAt      DateTime?
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  items           InvoiceItem[]
+  creator         User          @relation("InvoiceCreatedBy", fields: [createdBy], references: [id])
+  approver        User?         @relation("InvoiceApprovedBy", fields: [approvedBy], references: [id])
+
+  @@index([vendor])
+  @@index([status])
+  @@index([createdBy])
+  @@index([createdAt])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id               String          @id @default(cuid())
+  invoiceId        String
+  sequence         Int
+
+  // Product identification
+  sku              String
+  productName      String
+  productVariantId String?         // Link to existing variant (optional)
+
+  // Generated barcode (Code128 from SKU)
+  barcode          String?
+
+  // Quantities & cost
+  quantity         Int             @default(0)
+  unitCost         Decimal         @default(0) @db.Decimal(10, 2)
+  totalCost        Decimal         @default(0) @db.Decimal(10, 2)
+
+  // Optional location assignment
+  locationId       String?
+
+  // Lot tracking
+  lotNumber        String?
+  expiryDate       DateTime?
+
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  // Relations
+  invoice          Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productVariant   ProductVariant? @relation(fields: [productVariantId], references: [id])
+  location         Location?       @relation(fields: [locationId], references: [id])
+
+  @@unique([invoiceId, sku])
+  @@index([productVariantId])
+  @@index([locationId])
+  @@index([barcode])
+  @@map("invoice_items")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  CANCELLED
+}

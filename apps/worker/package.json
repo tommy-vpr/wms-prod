@@ -1,0 +1,30 @@
+{
+  "name": "worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "cross-env DOTENV_CONFIG_PATH=../../.env tsx watch src/worker.ts",
+    "build": "tsc",
+    "start": "node dist/worker.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.18.0",
+    "@wms/config": "workspace:*",
+    "@wms/db": "workspace:*",
+    "@wms/domain": "workspace:*",
+    "@wms/pubsub": "workspace:*",
+    "@wms/queue": "workspace:*",
+    "bullmq": "^5.52.0",
+    "dotenv": "^17.2.3",
+    "ioredis": "^5.9.1",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "cross-env": "^10.1.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.3"
+  }
+}

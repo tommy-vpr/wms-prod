@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-border: #ddd; /* gray-200 */
+  --color-border-focus: #3b82f6; /* blue-500 */
+  --color-border-error: #ef4444; /* red-500 */
+}
+
+body {
+  font-family: "Inter", sans-serif;
+}

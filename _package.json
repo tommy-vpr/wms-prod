@@ -1,0 +1,27 @@
+{
+  "name": "wms",
+  "private": true,
+  "scripts": {
+    "build": "pnpm -r build",
+    "build:packages": "pnpm -r --filter \"@wms/*\" build",
+    "dev": "pnpm build:packages && pnpm run dev:api & pnpm run dev:worker",
+    "dev:api": "pnpm --filter api dev",
+    "dev:worker": "pnpm --filter worker dev",
+    "dev:web": "pnpm --filter web dev",
+    "db:generate": "pnpm --filter @wms/db db:generate",
+    "db:push": "pnpm --filter @wms/db db:push",
+    "db:migrate": "pnpm --filter @wms/db db:migrate",
+    "db:studio": "pnpm --filter @wms/db db:studio",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

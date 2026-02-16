@@ -1,0 +1,109 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Vendor Invoice
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD to bottom of schema.prisma (before closing)
+
+model Invoice {
+  id              String        @id @default(cuid())
+  invoiceNumber   String        @unique // INV-2026-001
+  vendor          String
+  status          InvoiceStatus @default(DRAFT)
+
+  // Uploaded vendor invoice image (GCS URL)
+  imageUrl        String?
+  imageFilename   String?
+
+  // Totals (computed on save)
+  totalItems      Int           @default(0)
+  totalQuantity   Int           @default(0)
+  totalCost       Decimal       @default(0) @db.Decimal(10, 2)
+
+  // Tax & Fees (manual input)
+  tax             Decimal       @default(0) @db.Decimal(10, 2)
+  fees            Decimal       @default(0) @db.Decimal(10, 2)
+  grandTotal      Decimal       @default(0) @db.Decimal(10, 2) // totalCost + tax + fees
+
+  notes           String?
+
+  // Workflow
+  createdBy       String
+  submittedAt     DateTime?
+  approvedBy      String?
+  approvedAt      DateTime?
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  items           InvoiceItem[]
+  creator         User          @relation("InvoiceCreatedBy", fields: [createdBy], references: [id])
+  approver        User?         @relation("InvoiceApprovedBy", fields: [approvedBy], references: [id])
+
+  @@index([vendor])
+  @@index([status])
+  @@index([createdBy])
+  @@index([createdAt])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id               String          @id @default(cuid())
+  invoiceId        String
+  sequence         Int
+
+  // Product identification
+  sku              String
+  productName      String
+  productVariantId String?         // Link to existing variant (optional)
+
+  // Generated barcode (Code128 from SKU)
+  barcode          String?
+
+  // Quantities & cost
+  quantity         Int             @default(0)
+  unitCost         Decimal         @default(0) @db.Decimal(10, 2)
+  totalCost        Decimal         @default(0) @db.Decimal(10, 2)
+
+  // Optional location assignment
+  locationId       String?
+
+  // Lot tracking
+  lotNumber        String?
+  expiryDate       DateTime?
+
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  // Relations
+  invoice          Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productVariant   ProductVariant? @relation(fields: [productVariantId], references: [id])
+  location         Location?       @relation(fields: [locationId], references: [id])
+
+  @@unique([invoiceId, sku])
+  @@index([productVariantId])
+  @@index([locationId])
+  @@index([barcode])
+  @@map("invoice_items")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD these relations to existing models:
+// ─────────────────────────────────────────────────────────────────────────────
+
+// In User model, add:
+//   invoicesCreated   Invoice[]  @relation("InvoiceCreatedBy")
+//   invoicesApproved  Invoice[]  @relation("InvoiceApprovedBy")
+
+// In ProductVariant model, add:
+//   invoiceItems      InvoiceItem[]
+
+// In Location model, add:
+//   invoiceItems      InvoiceItem[]

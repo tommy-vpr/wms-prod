@@ -1,0 +1,166 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# WMS Docker Compose - Local Development & Testing
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# NOTE: This is for LOCAL DEVELOPMENT only.
+# Production uses:
+#   - Supabase (PostgreSQL) - external
+#   - Redis in Coolify - internal
+#
+# Usage:
+#   docker-compose up --build         # Build and start all services
+#   docker-compose up -d --build      # Start in background
+#   docker-compose logs -f api        # Follow API logs
+#   docker-compose down               # Stop all services
+#   docker-compose down -v            # Stop and remove volumes (reset DB)
+#
+# Access:
+#   Web:      http://localhost:8080
+#   API:      http://localhost:3000
+#   Postgres: localhost:5432
+#   Redis:    localhost:6379
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+version: "3.8"
+
+services:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PostgreSQL Database
+  # ─────────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: wms-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: wms
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d wms"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - wms-network
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Redis Cache & Queue
+  # ─────────────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: wms-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wms-network
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # API Service (Fastify)
+  # ─────────────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: wms-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/wms
+      DIRECT_URL: postgresql://postgres:postgres@postgres:5432/wms
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: local-development-jwt-secret-minimum-32-characters-long
+      JWT_REFRESH_SECRET: local-development-refresh-secret-minimum-32-chars
+      # Optional - add your own keys for local testing
+      SHIPENGINE_API_KEY: ${SHIPENGINE_API_KEY:-}
+      SHIPENGINE_SANDBOX: "true"
+      SHOPIFY_SHOP_DOMAIN: ${SHOPIFY_SHOP_DOMAIN:-}
+      SHOPIFY_ACCESS_TOKEN: ${SHOPIFY_ACCESS_TOKEN:-}
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-}
+      GCS_PROJECT_ID: ${GCS_PROJECT_ID:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - wms-network
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Worker Service (BullMQ)
+  # ─────────────────────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    container_name: wms-worker
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/wms
+      REDIS_URL: redis://redis:6379
+      SHIPENGINE_API_KEY: ${SHIPENGINE_API_KEY:-}
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-}
+      GCS_PROJECT_ID: ${GCS_PROJECT_ID:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - wms-network
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Web Frontend (Nginx + Vite build)
+  # ─────────────────────────────────────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: http://localhost:3000
+    container_name: wms-web
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - wms-network
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Volumes
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Networks
+# ─────────────────────────────────────────────────────────────────────────────
+networks:
+  wms-network:
+    driver: bridge
