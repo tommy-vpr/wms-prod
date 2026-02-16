@@ -31,6 +31,16 @@ export type {
 
 // Order Packages
 export { orderPackageRepository } from "./order-package.repo.js";
+export type {
+  OrderPackageRepository,
+  CreatePackageInput,
+  CreatePackageItemInput,
+  UpdatePackageInput,
+  PackedPackageInput,
+  OrderPackageRecord,
+  OrderPackageItemRecord,
+  OrderItemWithDimensions,
+} from "./order-package.repo.js";
 
 // Fulfillment Pipeline - Picking
 export { pickingRepository } from "./picking.repo.js";
