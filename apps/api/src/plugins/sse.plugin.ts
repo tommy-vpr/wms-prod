@@ -92,6 +92,9 @@ const ssePluginImpl: FastifyPluginAsync = async (app) => {
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
         "X-Accel-Buffering": "no", // Disable nginx buffering
+        "Access-Control-Allow-Origin":
+          request.headers.origin || "https://app.teevong.com",
+        "Access-Control-Allow-Credentials": "true",
       });
 
       // Send initial connection event
