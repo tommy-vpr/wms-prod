@@ -50,8 +50,10 @@ export async function buildApp() {
   });
 
   await app.register(cors, {
-    origin: true,
+    origin: ["https://app.teevong.com", "http://localhost:5173"],
     credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   });
 
   app.setErrorHandler(errorHandler);
