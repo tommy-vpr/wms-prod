@@ -93,7 +93,7 @@ const ssePluginImpl: FastifyPluginAsync = async (app) => {
         Connection: "keep-alive",
         "X-Accel-Buffering": "no", // Disable nginx buffering
         "Access-Control-Allow-Origin":
-          request.headers.origin || "https://app.teevong.com",
+          request.headers.origin || "https://app.hq.team",
         "Access-Control-Allow-Credentials": "true",
       });
 
