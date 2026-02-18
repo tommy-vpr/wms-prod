@@ -1,6 +1,6 @@
 import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
 import { lazy, Suspense } from "react";
-import { AuthProvider } from "./lib/auth";
+import { AuthProvider, useAuth } from "./lib/auth";
 import { AppLayout, AuthLayout } from "./layouts";
 import { Loader2 } from "lucide-react";
 
@@ -42,10 +42,15 @@ import { ReportsPage } from "./pages/reports";
 // Users
 import { UsersPage } from "./pages/users";
 
+// User Passwords
+import ForgotPasswordPage from "./pages/ForgotPasswordPage";
+import ResetPasswordPage from "./pages/ResetPasswordPage";
+
 // Settings
 import { SettingsPage } from "./pages/settings";
 import LocationsPage from "./pages/locations";
 import LocationDetailPage from "./pages/locations/[id]";
+import { UserRole } from "@wms/types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Receiving (lazy loaded)
@@ -77,6 +82,11 @@ const ScanPage = lazy(() => import("./pages/scan/index"));
 const ShipPage = lazy(() => import("./pages/shipping/index"));
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Super Admin
+// ─────────────────────────────────────────────────────────────────────────────
+const CreateUserDashboard = lazy(() => import("./pages/create-staff/index"));
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Invoices (lazy loaded)
 // ─────────────────────────────────────────────────────────────────────────────
 const InvoicesPage = lazy(() => import("./pages/invoices"));
@@ -106,6 +116,28 @@ function AuthProviderLayout() {
   );
 }
 
+function RequireRole({
+  roles,
+  children,
+}: {
+  roles: UserRole[];
+  children: React.ReactNode;
+}) {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) return <PageLoader />;
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (!roles.includes(user.role)) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return <>{children}</>;
+}
+
 export const router = createBrowserRouter([
   {
     element: <AuthProviderLayout />,
@@ -120,7 +152,8 @@ export const router = createBrowserRouter([
         element: <AuthLayout />,
         children: [
           { path: "/login", element: <LoginPage /> },
-          { path: "/signup", element: <SignupPage /> },
+          { path: "/forgot-password", element: <ForgotPasswordPage /> },
+          { path: "/reset-password", element: <ResetPasswordPage /> },
         ],
       },
 
@@ -200,6 +233,15 @@ export const router = createBrowserRouter([
           { path: "/scan", element: withSuspense(ScanPage) },
 
           { path: "/shipping", element: withSuspense(ShipPage) },
+
+          {
+            path: "/create-staff",
+            element: (
+              <RequireRole roles={["SUPER_ADMIN"]}>
+                {withSuspense(CreateUserDashboard)}
+              </RequireRole>
+            ),
+          },
 
           { path: "/reports", element: <ReportsPage /> },
           { path: "/users", element: <UsersPage /> },

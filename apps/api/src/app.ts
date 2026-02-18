@@ -27,6 +27,7 @@ import packingImageRoutes from "./routes/packing-images.routes.js";
 import { invoiceRoutes } from "./routes/invoice.routes.js";
 import { workflowCountsRoutes } from "./routes/workflow-counts.routes.js";
 import { fulfillmentPackageRoutes } from "./routes/fulfillment-package.routes.js";
+import { adminUserRoutes } from "./routes/admin/users.routes.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -124,6 +125,9 @@ export async function buildApp() {
     await protectedRoutes.register(workflowCountsRoutes, {
       prefix: "/workflow-counts",
     });
+
+    // Admin user management
+    await protectedRoutes.register(adminUserRoutes, { prefix: "/admin/users" });
   });
 
   return app;

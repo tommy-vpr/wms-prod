@@ -82,7 +82,10 @@ export const inventoryPlannerRoutes: FastifyPluginAsync = async (app) => {
     const user = request.user;
 
     // Check permissions
-    if (!user || !["ADMIN", "MANAGER"].includes(user.role ?? "")) {
+    if (
+      !user ||
+      !["SUPER_ADMIN", "ADMIN", "MANAGER"].includes(user.role ?? "")
+    ) {
       return reply.status(403).send({
         error: "Forbidden",
         message: "Only ADMIN or MANAGER can trigger sync",
@@ -198,7 +201,7 @@ export const inventoryPlannerRoutes: FastifyPluginAsync = async (app) => {
    */
   app.delete("/sync/clear", async (request, reply) => {
     const user = request.user;
-    if (user?.role !== "ADMIN") {
+    if (!["SUPER_ADMIN", "ADMIN"].includes(user?.role ?? "")) {
       return reply.status(403).send({ error: "Admin only" });
     }
 
@@ -215,7 +218,10 @@ export const inventoryPlannerRoutes: FastifyPluginAsync = async (app) => {
   app.get("/preview", async (request, reply) => {
     const user = request.user;
 
-    if (!user || !["ADMIN", "MANAGER"].includes(user.role ?? "")) {
+    if (
+      !user ||
+      !["SUPER_ADMIN", "ADMIN", "MANAGER"].includes(user.role ?? "")
+    ) {
       return reply.status(403).send({ error: "Forbidden" });
     }
 

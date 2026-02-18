@@ -10,9 +10,9 @@ import {
 import { LoginSchema, RefreshTokenSchema } from "@wms/types";
 import crypto from "crypto";
 import { z } from "zod";
+import { sendPasswordResetEmail } from "../services/email.service.js";
 
 export async function authRoutes(app: FastifyInstance) {
-  // Stricter rate limit for auth endpoints
   const authRateLimit = {
     config: {
       rateLimit: {
@@ -22,44 +22,9 @@ export async function authRoutes(app: FastifyInstance) {
     },
   };
 
-  app.post("/signup", authRateLimit, async (request, reply) => {
-    const body = z
-      .object({
-        name: z.string().min(1),
-        email: z.string().email(),
-        password: z.string().min(8),
-      })
-      .parse(request.body);
-
-    // Check if user exists
-    const existing = await prisma.user.findUnique({
-      where: { email: body.email },
-    });
-
-    if (existing) {
-      return reply.status(409).send({
-        error: { code: "USER_EXISTS", message: "Email already registered" },
-      });
-    }
-
-    // Create user
-    const user = await prisma.user.create({
-      data: {
-        name: body.name,
-        email: body.email,
-        password: await hashPassword(body.password),
-      },
-    });
-
-    return reply.status(201).send({
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-      },
-    });
-  });
-
+  // ─────────────────────────────────────────────────────────────────────
+  // Login
+  // ─────────────────────────────────────────────────────────────────────
   app.post("/login", authRateLimit, async (request, reply) => {
     const body = LoginSchema.parse(request.body);
 
@@ -124,6 +89,114 @@ export async function authRoutes(app: FastifyInstance) {
     };
   });
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Forgot Password
+  // ─────────────────────────────────────────────────────────────────────
+  app.post("/forgot-password", authRateLimit, async (request, reply) => {
+    const body = z.object({ email: z.string().email() }).parse(request.body);
+
+    // Always return success to prevent email enumeration
+    const successResponse = {
+      message:
+        "If an account exists with this email, you will receive a password reset link.",
+    };
+
+    const user = await prisma.user.findUnique({
+      where: { email: body.email },
+    });
+
+    if (!user || !user.active) {
+      return successResponse;
+    }
+
+    // Invalidate any existing reset tokens
+    await prisma.passwordResetToken.updateMany({
+      where: {
+        userId: user.id,
+        usedAt: null,
+      },
+      data: {
+        usedAt: new Date(),
+      },
+    });
+
+    // Generate secure token
+    const token = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+
+    // Store token (expires in 1 hour)
+    await prisma.passwordResetToken.create({
+      data: {
+        token: hashedToken,
+        userId: user.id,
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hour
+      },
+    });
+
+    // Send email (don't await to prevent timing attacks)
+    sendPasswordResetEmail(user.email, token, user.name).catch((err) => {
+      console.error("Failed to send reset email:", err);
+    });
+
+    return successResponse;
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Reset Password
+  // ─────────────────────────────────────────────────────────────────────
+  app.post("/reset-password", authRateLimit, async (request, reply) => {
+    const body = z
+      .object({
+        token: z.string().min(1),
+        password: z.string().min(8),
+      })
+      .parse(request.body);
+
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(body.token)
+      .digest("hex");
+
+    const resetToken = await prisma.passwordResetToken.findUnique({
+      where: { token: hashedToken },
+      include: { user: true },
+    });
+
+    if (!resetToken || resetToken.usedAt || resetToken.expiresAt < new Date()) {
+      return reply.status(400).send({
+        error: {
+          code: "INVALID_TOKEN",
+          message: "Invalid or expired reset token",
+        },
+      });
+    }
+
+    // Update password
+    await prisma.user.update({
+      where: { id: resetToken.userId },
+      data: {
+        password: await hashPassword(body.password),
+      },
+    });
+
+    // Mark token as used
+    await prisma.passwordResetToken.update({
+      where: { id: resetToken.id },
+      data: { usedAt: new Date() },
+    });
+
+    // Revoke all refresh tokens for security
+    await prisma.refreshToken.updateMany({
+      where: { userId: resetToken.userId },
+      data: { revokedAt: new Date() },
+    });
+
+    return { message: "Password reset successfully" };
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Refresh Token
+  // ─────────────────────────────────────────────────────────────────────
   app.post("/refresh", async (request, reply) => {
     const body = RefreshTokenSchema.parse(request.body);
 
@@ -190,6 +263,9 @@ export async function authRoutes(app: FastifyInstance) {
     }
   });
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Logout
+  // ─────────────────────────────────────────────────────────────────────
   app.post("/logout", async (request, reply) => {
     const body = RefreshTokenSchema.parse(request.body);
     const tokenHash = crypto

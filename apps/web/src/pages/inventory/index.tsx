@@ -25,6 +25,10 @@ import { InventoryPlannerSyncCard } from "@/components/inventory/InventoryPlanne
 import { LocationImportCard } from "@/components/inventory/LocationImportCard";
 import { ProductImportCard } from "@/components/inventory/ProductImportCard";
 
+// Add import at top
+import { useInventoryStream } from "@/hooks/useInventoryStream";
+import { toast } from "sonner"; // or your toast library
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -204,6 +208,29 @@ export default function InventoryPage() {
     fetchStats();
   };
 
+  // Add SSE stream
+  const { connected, syncing: streamSyncing } = useInventoryStream({
+    onSyncStarted: () => {
+      toast.info("Inventory sync started...");
+    },
+    onSyncCompleted: ({ updated, unchanged, skipped, duration }) => {
+      toast.success(
+        `Sync completed in ${(duration / 1000).toFixed(1)}s: ${updated} updated, ${unchanged} unchanged`,
+      );
+      // Refresh data
+      fetchInventory();
+      fetchStats();
+    },
+    onSyncFailed: ({ error }) => {
+      toast.error(`Sync failed: ${error}`);
+    },
+    onInventoryUpdated: () => {
+      // Could debounce this if many updates
+      fetchInventory();
+      fetchStats();
+    },
+  });
+
   // ============================================================================
   // Pagination
   // ============================================================================
@@ -237,7 +264,18 @@ export default function InventoryPage() {
         <div className="flex items-center gap-3">
           <Warehouse className="w-8 h-8 text-blue-500" />
           <div>
-            <h1 className="text-2xl font-bold">Inventory</h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold">Inventory</h1>
+              {/* Live indicator */}
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={`w-2 h-2 rounded-full ${connected ? "bg-green-500" : "bg-red-500"}`}
+                />
+                <span className="text-xs text-gray-400">
+                  {connected ? "Live" : "Offline"}
+                </span>
+              </div>
+            </div>
             <p className="text-gray-500 text-sm">
               {(stats?.totalQuantity ?? 0).toLocaleString()} units across{" "}
               {(stats?.totalUnits ?? 0).toLocaleString()} locations

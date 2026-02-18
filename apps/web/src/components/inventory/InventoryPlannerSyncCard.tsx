@@ -1,7 +1,7 @@
 /**
  * Inventory Planner Sync Card
  * Shows sync status and button to trigger sync
- * UPDATED: Shows unassigned SKU count
+ * UPDATED: Uses SSE for real-time updates
  *
  * Save to: apps/web/src/components/inventory/InventoryPlannerSyncCard.tsx
  */
@@ -16,6 +16,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { apiClient } from "@/lib/api";
+import { useInventoryStream } from "@/hooks/useInventoryStream";
 
 interface SyncStatus {
   configured: boolean;
@@ -45,26 +46,19 @@ interface SyncStatus {
   syncInProgress: boolean;
 }
 
-interface JobStatus {
-  jobId: string;
-  state: string;
-  progress: number;
-  result?: {
-    created: number;
-    updated: number;
-    unchanged: number;
-    skipped: number;
-    errors: string[];
-  };
-  failedReason?: string;
+interface SyncResult {
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  unassignedCount: number;
+  duration: number;
 }
 
 export function InventoryPlannerSyncCard() {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
-  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
+  const [lastResult, setLastResult] = useState<SyncResult | null>(null);
   const [error, setError] = useState("");
 
   // Fetch status
@@ -72,68 +66,53 @@ export function InventoryPlannerSyncCard() {
     try {
       const data = await apiClient.get<SyncStatus>("/inventory-planner/status");
       setStatus(data);
-      setSyncing(data.syncInProgress);
+      // Only set syncing from status on initial load
+      if (loading) {
+        setSyncing(data.syncInProgress);
+      }
     } catch (err: any) {
       console.error("Failed to fetch IP status:", err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loading]);
 
-  // Poll job status
-  const pollJobStatus = useCallback(
-    async (jobId: string) => {
-      try {
-        const data = await apiClient.get<JobStatus>(
-          `/inventory-planner/sync/${jobId}`,
-        );
-        setJobStatus(data);
-
-        if (data.state === "completed" || data.state === "failed") {
-          setSyncing(false);
-          setCurrentJobId(null);
-          fetchStatus(); // Refresh main status
-        }
-      } catch (err) {
-        console.error("Failed to poll job status:", err);
-      }
+  // Use SSE for real-time updates
+  useInventoryStream({
+    onSyncStarted: () => {
+      setSyncing(true);
+      setLastResult(null);
+      setError("");
     },
-    [fetchStatus],
-  );
+    onSyncCompleted: (result) => {
+      setSyncing(false);
+      setLastResult(result);
+      fetchStatus(); // Refresh status
+    },
+    onSyncFailed: ({ error }) => {
+      setSyncing(false);
+      setError(error);
+      fetchStatus();
+    },
+  });
 
-  // Initial fetch
+  // Initial fetch only
   useEffect(() => {
     fetchStatus();
   }, [fetchStatus]);
 
-  // Poll while syncing
-  useEffect(() => {
-    if (!currentJobId) return;
-
-    const interval = setInterval(() => {
-      pollJobStatus(currentJobId);
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, [currentJobId, pollJobStatus]);
-
   // Trigger sync
   const handleSync = async () => {
     setError("");
-    setSyncing(true);
-    setJobStatus(null);
+    setLastResult(null);
 
     try {
-      const data = await apiClient.post<{ success: boolean; jobId: string }>(
+      await apiClient.post<{ success: boolean; jobId: string }>(
         "/inventory-planner/sync",
       );
-
-      if (data.success) {
-        setCurrentJobId(data.jobId);
-      }
+      // SSE will handle the rest
     } catch (err: any) {
       setError(err.message);
-      setSyncing(false);
     }
   };
 
@@ -174,7 +153,7 @@ export function InventoryPlannerSyncCard() {
         <button
           onClick={handleSync}
           disabled={syncing}
-          className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
+          className={`cursor-pointer px-4 py-2 rounded-lg flex items-center gap-2 ${
             syncing
               ? "bg-gray-100 text-gray-500 cursor-not-allowed"
               : "bg-blue-600 text-white hover:bg-blue-700"
@@ -193,69 +172,60 @@ export function InventoryPlannerSyncCard() {
         </div>
       )}
 
-      {/* Current Job Progress */}
-      {syncing && jobStatus && (
+      {/* Syncing State */}
+      {syncing && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
-          <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center gap-2">
             <RefreshCw className="w-4 h-4 animate-spin text-blue-600" />
             <span className="font-medium text-blue-800">
               Sync in progress...
             </span>
           </div>
-          <div className="w-full bg-blue-200 rounded-full h-2">
-            <div
-              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${jobStatus.progress || 0}%` }}
-            />
-          </div>
-          <p className="text-xs text-blue-600 mt-1">
-            {jobStatus.progress || 0}% complete
-          </p>
         </div>
       )}
 
-      {/* Job Result */}
-      {jobStatus?.state === "completed" && jobStatus.result && (
+      {/* Sync Result */}
+      {lastResult && !syncing && (
         <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
           <div className="flex items-center gap-2 mb-2">
             <CheckCircle className="w-4 h-4 text-green-600" />
-            <span className="font-medium text-green-800">Sync completed!</span>
+            <span className="font-medium text-green-800">
+              Sync completed in {(lastResult.duration / 1000).toFixed(1)}s
+            </span>
           </div>
-          <div className="grid grid-cols-3 gap-4 text-sm">
+          <div className="grid grid-cols-4 gap-4 text-sm">
             <div>
               <div className="text-blue-600 font-semibold">
-                {jobStatus.result.updated}
+                {lastResult.updated}
               </div>
               <div className="text-gray-500">Updated</div>
             </div>
             <div>
               <div className="text-gray-600 font-semibold">
-                {jobStatus.result.unchanged}
+                {lastResult.unchanged}
               </div>
               <div className="text-gray-500">Unchanged</div>
             </div>
             <div>
               <div className="text-yellow-600 font-semibold">
-                {jobStatus.result.skipped}
+                {lastResult.skipped}
               </div>
               <div className="text-gray-500">Skipped</div>
             </div>
+            {lastResult.unassignedCount > 0 && (
+              <div>
+                <div className="text-orange-600 font-semibold">
+                  {lastResult.unassignedCount}
+                </div>
+                <div className="text-gray-500">Unassigned</div>
+              </div>
+            )}
           </div>
-        </div>
-      )}
-
-      {jobStatus?.state === "failed" && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
-          <div className="flex items-center gap-2">
-            <XCircle className="w-4 h-4 text-red-600" />
-            <span className="font-medium text-red-800">Sync failed</span>
-          </div>
-          <p className="text-sm text-red-600 mt-1">{jobStatus.failedReason}</p>
         </div>
       )}
 
       {/* Last Sync Info */}
-      {status.lastSync && (
+      {status.lastSync && !lastResult && (
         <div className="border-t border-border pt-4 mt-4">
           <div className="flex items-center gap-2 text-sm text-gray-500 mb-2">
             <Clock className="w-4 h-4" />
@@ -278,21 +248,24 @@ export function InventoryPlannerSyncCard() {
       )}
 
       {/* Unassigned Warning */}
-      {status.lastSync?.result?.unassignedCount &&
-        status.lastSync.result.unassignedCount > 0 && (
-          <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-            <div className="flex items-center gap-2 text-yellow-800 text-sm">
-              <AlertTriangle className="w-4 h-4" />
-              <span>
-                <strong>{status.lastSync.result.unassignedCount}</strong> SKUs
-                need location assignment before quantities can sync.
-              </span>
-            </div>
-            <p className="text-xs text-yellow-700 mt-1">
-              Import locations from CSV to assign inventory locations.
-            </p>
+      {((lastResult && lastResult.unassignedCount > 0) ||
+        (status.lastSync?.result?.unassignedCount ?? 0) > 0) && (
+        <div className="mt-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+          <div className="flex items-center gap-2 text-yellow-800 text-sm">
+            <AlertTriangle className="w-4 h-4" />
+            <span>
+              <strong>
+                {lastResult?.unassignedCount ??
+                  status.lastSync?.result?.unassignedCount}
+              </strong>{" "}
+              SKUs need location assignment before quantities can sync.
+            </span>
           </div>
-        )}
+          <p className="text-xs text-yellow-700 mt-1">
+            Import locations from CSV to assign inventory locations.
+          </p>
+        </div>
+      )}
 
       {/* Info */}
       <div className="mt-4 text-xs text-gray-400">

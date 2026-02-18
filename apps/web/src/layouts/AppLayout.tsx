@@ -100,54 +100,60 @@ const allNavItems: NavItem[] = [
   { to: "/cycle-count", label: "Cycle Count", icon: RefreshCw },
   { to: "/scan", label: "Scan", icon: ScanBarcode },
   {
+    to: "/create-staff",
+    label: "Create Staff",
+    icon: User,
+    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER"],
+  },
+  {
     to: "/orders",
     label: "Orders",
     icon: ShoppingCart,
-    roles: ["ADMIN", "MANAGER"],
+    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER"],
   },
   {
     to: "/products",
     label: "Products",
     icon: Package,
-    roles: ["ADMIN", "MANAGER"],
+    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER"],
   },
   {
     to: "/inventory",
     label: "Inventory",
     icon: Warehouse,
-    roles: ["ADMIN", "MANAGER"],
+    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER"],
   },
   {
     to: "/locations",
     label: "Locations",
     icon: MapPin,
-    roles: ["ADMIN", "MANAGER"],
+    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER"],
   },
   {
     to: "/shipping",
     label: "Shipping",
     icon: Truck,
-    roles: ["ADMIN", "MANAGER"],
+    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER"],
   },
   {
     to: "/reports",
     label: "Reports",
     icon: BarChart3,
-    roles: ["ADMIN", "MANAGER"],
+    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER"],
     fullOnly: true,
   },
   {
     to: "/users",
     label: "Users",
     icon: Users,
-    roles: ["ADMIN"],
+    roles: ["SUPER_ADMIN", "ADMIN"],
     fullOnly: true,
   },
   {
     to: "/settings",
     label: "Settings",
     icon: Settings,
-    roles: ["ADMIN"],
+    roles: ["SUPER_ADMIN", "ADMIN"],
     fullOnly: true,
   },
 ];
@@ -460,6 +466,7 @@ export function AppLayout() {
 
             {navItems.some((i) =>
               [
+                "/create-staff",
                 "/orders",
                 "/products",
                 "/inventory",
@@ -477,6 +484,7 @@ export function AppLayout() {
                 {navItems
                   .filter((i) =>
                     [
+                      "/create-staff",
                       "/orders",
                       "/products",
                       "/inventory",

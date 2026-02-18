@@ -204,7 +204,10 @@ export const locationImportRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: { csv: string } }>("/import", async (request, reply) => {
     const user = request.user;
 
-    if (!user || !["ADMIN", "MANAGER"].includes(user.role ?? "")) {
+    if (
+      !user ||
+      !["SUPER_ADMIN", "ADMIN", "MANAGER"].includes(user.role ?? "")
+    ) {
       return reply.status(403).send({ error: "Admin or Manager required" });
     }
 

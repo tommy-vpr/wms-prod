@@ -45,6 +45,9 @@ export const EVENT_TYPES = {
   SHIPPING_LABEL_CREATED: "shipping:label_created",
   // Inventory
   INVENTORY_UPDATED: "inventory:updated",
+  INVENTORY_SYNC_STARTED: "inventory:sync_started",
+  INVENTORY_SYNC_COMPLETED: "inventory:sync_completed",
+  INVENTORY_SYNC_FAILED: "inventory:sync_failed",
   // Cycle Count
   CYCLE_COUNT_STARTED: "cycle_count:started",
   CYCLE_COUNT_SUBMITTED: "cycle_count:submitted",
