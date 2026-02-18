@@ -94,7 +94,7 @@ export function getStorageService(): StorageService {
   if (!storageInstance) {
     const projectId = process.env.GCP_PROJECT_ID;
     const clientEmail = process.env.GCP_CLIENT_EMAIL;
-    const privateKey = process.env.GCP_PRIVATE_KEY;
+    const privateKey = process.env.GCP_PRIVATE_KEY?.replace(/\\n/g, "\n");
     const bucketName = process.env.GCP_BUCKET_NAME;
 
     if (!projectId || !clientEmail || !privateKey || !bucketName) {
