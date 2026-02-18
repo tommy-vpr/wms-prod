@@ -38,6 +38,8 @@ import {
   MapPin,
   Combine,
   RefreshCw,
+  Text,
+  Receipt,
 } from "lucide-react";
 import { useState, createContext, useContext, useEffect } from "react";
 import { useAuth, type User as AuthUser } from "../lib/auth";
@@ -103,6 +105,12 @@ const allNavItems: NavItem[] = [
     to: "/create-staff",
     label: "Create Staff",
     icon: User,
+    roles: ["SUPER_ADMIN", "ADMIN", "MANAGER"],
+  },
+  {
+    to: "/invoices",
+    label: "Invoices",
+    icon: Receipt,
     roles: ["SUPER_ADMIN", "ADMIN", "MANAGER"],
   },
   {
@@ -467,6 +475,7 @@ export function AppLayout() {
             {navItems.some((i) =>
               [
                 "/create-staff",
+                "/invoices",
                 "/orders",
                 "/products",
                 "/inventory",
@@ -485,6 +494,7 @@ export function AppLayout() {
                   .filter((i) =>
                     [
                       "/create-staff",
+                      "/invoices",
                       "/orders",
                       "/products",
                       "/inventory",
