@@ -475,7 +475,7 @@ diff -ruN '--exclude=.git' '--exclude=node_modules' a/apps/worker/src/processors
            // Log inventory event
 diff -ruN '--exclude=.git' '--exclude=node_modules' a/packages/domain/src/services/order-allocation.service.ts b/packages/domain/src/services/order-allocation.service.ts
 --- a/packages/domain/src/services/order-allocation.service.ts	2026-02-19 00:12:04.000000000 +0000
-+++ b/packages/domain/src/services/order-allocation.service.ts	2026-02-19 02:39:19.000000000 +0000
++++ b/packages/domain/src/services/order-allocation.service.ts	2026-02-19 18:07:10.911914092 +0000
 @@ -5,6 +5,8 @@
   */
  
@@ -493,6 +493,15 @@ diff -ruN '--exclude=.git' '--exclude=node_modules' a/packages/domain/src/servic
    totalItems: number;
    allocatedItems: number;
    backorderedItems: number;
+@@ -97,7 +100,7 @@
+     orderId: string,
+     allowPartial = true,
+   ): Promise<OrderAllocationResult> {
+-    return prisma.$transaction(async (tx) => {
++    const result = await prisma.$transaction(async (tx) => {
+       // 1. Load order
+       const order = await tx.order.findUnique({
+         where: { id: orderId },
 @@ -141,6 +144,7 @@
            orderId,
            orderNumber: order.orderNumber,
@@ -622,7 +631,7 @@ diff -ruN '--exclude=.git' '--exclude=node_modules' a/packages/domain/src/servic
      const orders = await prisma.order.findMany({
        where: {
          status: { in: ["BACKORDERED", "PARTIALLY_ALLOCATED"] },
-@@ -324,13 +422,217 @@
+@@ -324,13 +422,216 @@
          },
        },
        select: { id: true },
@@ -709,7 +718,6 @@ diff -ruN '--exclude=.git' '--exclude=node_modules' a/packages/domain/src/servic
 +          customerEmail: order.customerEmail,
 +          shippingAddress: order.shippingAddress as any,
 +          billingAddress: order.billingAddress as any,
-+          shopifyLineItems: null,
 +          status: "BACKORDERED",
 +          paymentStatus: order.paymentStatus,
 +          priority: order.priority,
