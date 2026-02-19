@@ -156,7 +156,7 @@ export class OrderAllocationService {
             quantityAllocated: 0,
             status: "UNMATCHED",
           })),
-        };
+        } as OrderAllocationResult;
       }
 
       // 3. Allocate items
