@@ -7,6 +7,7 @@
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { ReceivingService } from "@wms/domain";
 import { prisma } from "@wms/db";
+import { enqueueCheckBackorders } from "@wms/queue";
 
 export const receivingRoutes: FastifyPluginAsync = async (app) => {
   const service = new ReceivingService(prisma);
@@ -649,6 +650,27 @@ export const receivingRoutes: FastifyPluginAsync = async (app) => {
 
       try {
         const result = await service.approve(sessionId, userId);
+
+        // ── Trigger backorder checks for received variants ──────────────
+        const variantIds = [
+          ...new Set(
+            result.inventoryCreated
+              .map((i) => i.productVariantId)
+              .filter(Boolean),
+          ),
+        ];
+        for (const productVariantId of variantIds) {
+          await enqueueCheckBackorders({
+            productVariantId,
+            triggerSource: `receiving:${sessionId}`,
+          }).catch((err) =>
+            console.error(
+              `[Receiving] Failed to enqueue backorder check for ${productVariantId}:`,
+              err,
+            ),
+          );
+        }
+
         return reply.send(result);
       } catch (err: any) {
         console.error("[Receiving] Approve error:", err);

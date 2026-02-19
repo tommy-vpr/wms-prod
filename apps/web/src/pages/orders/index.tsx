@@ -21,6 +21,7 @@ import {
   CheckCircle,
   AlertCircle,
   XCircle,
+  PauseCircle,
   MoreHorizontal,
   Wifi,
   WifiOff,
@@ -66,6 +67,7 @@ type OrderStatus =
   | "PENDING"
   | "ALLOCATED"
   | "PARTIALLY_ALLOCATED"
+  | "BACKORDERED"
   | "PICKING"
   | "PICKED"
   | "PACKING"
@@ -81,6 +83,7 @@ interface OrderStats {
   picking: number;
   packed: number;
   shipped: number;
+  backordered: number;
 }
 
 const PAGE_SIZE = 20;
@@ -107,6 +110,11 @@ const statusConfig: Record<
     label: "Partial",
     color: "bg-orange-100 text-orange-800",
     icon: AlertCircle,
+  },
+  BACKORDERED: {
+    label: "Backordered",
+    color: "bg-red-100 text-red-800",
+    icon: PauseCircle,
   },
   PICKING: {
     label: "Picking",
@@ -196,24 +204,55 @@ export default function OrdersPage() {
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-refresh orders list when new order:created events arrive
+  // Auto-refresh orders list when relevant events arrive
   useEffect(() => {
     if (!lastEvent) return;
-    if (lastEvent.type !== "order:created") return;
 
-    // Show toast notification
-    const orderNumber =
-      (lastEvent.payload?.orderNumber as string) || "New order";
-    setToast({ orderNumber, id: lastEvent.id });
-    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
-    toastTimeoutRef.current = setTimeout(() => setToast(null), 5000);
+    if (lastEvent.type === "order:created") {
+      // Show toast notification
+      const orderNumber =
+        (lastEvent.payload?.orderNumber as string) || "New order";
+      setToast({ orderNumber, id: lastEvent.id });
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+      toastTimeoutRef.current = setTimeout(() => setToast(null), 5000);
+    }
 
-    // Debounce refresh (in case multiple orders arrive rapidly)
-    if (refreshDebounceRef.current) clearTimeout(refreshDebounceRef.current);
-    refreshDebounceRef.current = setTimeout(() => {
-      fetchOrdersSilent();
-      fetchStats();
-    }, 1500);
+    if (lastEvent.type === "order:backorder_resolved") {
+      const orderNumber =
+        (lastEvent.payload?.orderNumber as string) || "Order";
+      setToast({ orderNumber: `${orderNumber} — backorder resolved ✓`, id: lastEvent.id });
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+      toastTimeoutRef.current = setTimeout(() => setToast(null), 5000);
+    }
+
+    if (lastEvent.type === "order:split") {
+      const orderNumber =
+        (lastEvent.payload?.originalOrderNumber as string) || "Order";
+      const boNumber =
+        (lastEvent.payload?.backorderOrderNumber as string) || "";
+      setToast({
+        orderNumber: `${orderNumber} split → ${boNumber} created`,
+        id: lastEvent.id,
+      });
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+      toastTimeoutRef.current = setTimeout(() => setToast(null), 5000);
+    }
+
+    // Debounce refresh for any order event
+    if (
+      [
+        "order:created",
+        "order:backordered",
+        "order:backorder_resolved",
+        "order:split",
+      ].includes(lastEvent.type)
+    ) {
+      if (refreshDebounceRef.current) clearTimeout(refreshDebounceRef.current);
+      refreshDebounceRef.current = setTimeout(() => {
+        fetchOrdersSilent();
+        fetchStats();
+      }, 1500);
+    }
   }, [lastEvent]);
 
   // Cleanup timeouts
@@ -395,7 +434,7 @@ export default function OrdersPage() {
 
       {/* Stats Cards */}
       {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-7 gap-4 mb-6">
           <StatCard
             label="Total"
             value={stats.total}
@@ -415,6 +454,13 @@ export default function OrdersPage() {
             color="blue"
             onClick={() => handleStatusFilter("ALLOCATED")}
             active={statusFilter === "ALLOCATED"}
+          />
+          <StatCard
+            label="Backordered"
+            value={stats.backordered}
+            color="red"
+            onClick={() => handleStatusFilter("BACKORDERED")}
+            active={statusFilter === "BACKORDERED"}
           />
           <StatCard
             label="Picking"

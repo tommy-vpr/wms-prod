@@ -7,6 +7,7 @@
 
 import { FastifyPluginAsync } from "fastify";
 import { prisma } from "@wms/db";
+import { enqueueCheckBackorders } from "@wms/queue";
 import {
   InventoryService,
   InventoryUnitNotFoundError,
@@ -775,6 +776,26 @@ export const inventoryRoutes: FastifyPluginAsync = async (app) => {
         request.body.newQuantity,
         request.body.reason,
       );
+
+      // ── Trigger backorder check if quantity increased ────────────────
+      if (result.adjustment > 0) {
+        const unit = await prisma.inventoryUnit.findUnique({
+          where: { id: request.params.id },
+          select: { productVariantId: true },
+        });
+        if (unit?.productVariantId) {
+          await enqueueCheckBackorders({
+            productVariantId: unit.productVariantId,
+            triggerSource: `adjustment:${request.params.id}`,
+          }).catch((err) =>
+            console.error(
+              `[Inventory] Failed to enqueue backorder check:`,
+              err,
+            ),
+          );
+        }
+      }
+
       return reply.send({ success: true, ...result });
     } catch (error) {
       return handleError(error, reply);

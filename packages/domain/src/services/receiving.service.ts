@@ -854,6 +854,7 @@ export class ReceivingService {
       sku: string;
       quantity: number;
       inventoryUnitId: string;
+      productVariantId: string;
     }>;
     putawayTask: { id: string; taskNumber: string };
   }> {
@@ -879,6 +880,7 @@ export class ReceivingService {
           sku: string;
           quantity: number;
           inventoryUnitId: string;
+          productVariantId: string;
         }> = [];
 
         // Create/update inventory for each line
@@ -924,6 +926,7 @@ export class ReceivingService {
             sku: line.sku,
             quantity: goodQuantity,
             inventoryUnitId: unit.id,
+            productVariantId: line.productVariantId,
           });
 
           // Log inventory event
