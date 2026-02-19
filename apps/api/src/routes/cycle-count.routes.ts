@@ -377,7 +377,6 @@ const cycleCountRoutes: FastifyPluginAsync = async (app) => {
           where: {
             sessionId,
             variance: { gt: 0 }, // more found than expected → new stock
-            productVariantId: { not: null },
           },
           select: { productVariantId: true },
           distinct: ["productVariantId"],
