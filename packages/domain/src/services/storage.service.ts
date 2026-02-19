@@ -20,6 +20,7 @@ export class StorageService {
 
   constructor(bucketName: string, credentials: any) {
     this.storage = new Storage({
+      projectId: credentials.project_id,
       credentials,
     });
 
