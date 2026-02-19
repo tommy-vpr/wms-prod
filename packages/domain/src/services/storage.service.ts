@@ -13,29 +13,18 @@ export interface UploadResult {
   contentType: string;
 }
 
-export interface StorageConfig {
-  projectId: string;
-  clientEmail: string;
-  privateKey: string;
-  bucketName: string;
-}
-
 export class StorageService {
   private storage: Storage;
   private bucket: Bucket;
   private bucketName: string;
 
-  constructor(config: StorageConfig) {
+  constructor(bucketName: string, credentials: any) {
     this.storage = new Storage({
-      projectId: config.projectId,
-      credentials: {
-        client_email: config.clientEmail,
-        private_key: config.privateKey,
-      },
+      credentials,
     });
 
-    this.bucketName = config.bucketName;
-    this.bucket = this.storage.bucket(config.bucketName);
+    this.bucketName = bucketName;
+    this.bucket = this.storage.bucket(bucketName);
   }
 
   /**
@@ -92,21 +81,18 @@ let storageInstance: StorageService | null = null;
 
 export function getStorageService(): StorageService {
   if (!storageInstance) {
-    const projectId = process.env.GCP_PROJECT_ID;
-    const clientEmail = process.env.GCP_CLIENT_EMAIL;
-    const privateKey = process.env.GCP_PRIVATE_KEY;
+    const base64 = process.env.GCS_SERVICE_ACCOUNT_BASE64;
     const bucketName = process.env.GCP_BUCKET_NAME;
 
-    if (!projectId || !clientEmail || !privateKey || !bucketName) {
-      throw new Error("GCP storage credentials not configured");
+    if (!base64 || !bucketName) {
+      throw new Error("GCS storage not configured");
     }
 
-    storageInstance = new StorageService({
-      projectId,
-      clientEmail,
-      privateKey,
-      bucketName,
-    });
+    const credentials = JSON.parse(
+      Buffer.from(base64, "base64").toString("utf-8"),
+    );
+
+    storageInstance = new StorageService(bucketName, credentials);
   }
 
   return storageInstance;

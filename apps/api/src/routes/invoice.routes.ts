@@ -15,17 +15,27 @@ import multipart from "@fastify/multipart";
 
 async function getStorage() {
   const { Storage } = await import("@google-cloud/storage");
-  const storage = new Storage({
-    projectId: process.env.GCP_PROJECT_ID,
-    credentials: {
-      client_email: process.env.GCP_CLIENT_EMAIL,
-      private_key: process.env.GCP_PRIVATE_KEY,
-    },
-  });
+
+  const base64 = process.env.GCS_SERVICE_ACCOUNT_BASE64;
+  if (!base64) {
+    throw new Error("GCS_SERVICE_ACCOUNT_BASE64 not configured");
+  }
+
+  const credentials = JSON.parse(
+    Buffer.from(base64, "base64").toString("utf-8"),
+  );
+
+  const bucketName = process.env.GCP_BUCKET_NAME;
+  if (!bucketName) {
+    throw new Error("GCP_BUCKET_NAME not configured");
+  }
+
+  const storage = new Storage({ credentials });
+
   return {
     storage,
-    bucket: storage.bucket(process.env.GCP_BUCKET_NAME!),
-    bucketName: process.env.GCP_BUCKET_NAME!,
+    bucket: storage.bucket(bucketName),
+    bucketName,
   };
 }
 
