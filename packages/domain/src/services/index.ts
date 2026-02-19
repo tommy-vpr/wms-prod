@@ -73,5 +73,4 @@ export {
   StorageService,
   getStorageService,
   type UploadResult,
-  type StorageConfig,
 } from "./storage.service.js";
