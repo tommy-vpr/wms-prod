@@ -31,6 +31,7 @@ import {
   Receipt,
   Archive,
   PauseCircle,
+  Scissors,
   Tag,
   Unlink,
   ChevronDown,
@@ -428,6 +429,21 @@ export function OrderDetailPage() {
     handleAction("cancel", `/orders/${order.id}/cancel`, "Order cancelled");
   };
 
+  const handleSplitBackorder = async () => {
+    if (!order) return;
+    if (
+      !confirm(
+        "This will split the order: allocated items will ship now, unallocated items will become a new backorder. Continue?",
+      )
+    )
+      return;
+    handleAction(
+      "split",
+      `/orders/${order.id}/split-backorder`,
+      "Order split — backorder created for remaining items",
+    );
+  };
+
   // ============================================================================
   // Render
   // ============================================================================
@@ -593,7 +609,7 @@ export function OrderDetailPage() {
         <div className="bg-white border border-border rounded-lg p-4 mb-6">
           <h2 className="font-semibold mb-3">Actions</h2>
           <div className="flex flex-wrap gap-2">
-            {["PENDING", "CONFIRMED"].includes(order.status) && (
+            {["PENDING", "CONFIRMED", "BACKORDERED"].includes(order.status) && (
               <ActionButton
                 onClick={handleAllocate}
                 loading={actionLoading === "allocate"}
@@ -601,7 +617,21 @@ export function OrderDetailPage() {
                 icon={Package}
                 className="bg-blue-600 text-white hover:bg-blue-700"
               >
-                Allocate Inventory
+                {order.status === "BACKORDERED"
+                  ? "Retry Allocation"
+                  : "Allocate Inventory"}
+              </ActionButton>
+            )}
+
+            {["PARTIALLY_ALLOCATED"].includes(order.status) && (
+              <ActionButton
+                onClick={handleSplitBackorder}
+                loading={actionLoading === "split"}
+                disabled={!!actionLoading}
+                icon={Scissors}
+                className="bg-orange-600 text-white hover:bg-orange-700"
+              >
+                Split &amp; Ship Allocated
               </ActionButton>
             )}
 

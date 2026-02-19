@@ -140,13 +140,18 @@ async function processCheckBackorders(job: Job<CheckBackordersJobData>) {
       `[Orders] Found ${orderIds.length} backordered orders to retry`,
     );
 
-    for (const orderId of orderIds) {
+    // Stagger allocation jobs to reduce contention on the same inventory
+    for (let i = 0; i < orderIds.length; i++) {
       await enqueueAllocateOrder({
-        orderId,
+        orderId: orderIds[i],
         allowPartial: true,
-        idempotencyKey: `backorder-retry-${orderId}-${Date.now()}`,
+        idempotencyKey: `backorder-retry-${orderIds[i]}-${Date.now()}`,
       });
     }
+  } else {
+    console.log(
+      `[Orders] No backordered orders found for variant: ${productVariantId}`,
+    );
   }
 
   return { productVariantId, ordersFound: orderIds.length, orderIds };

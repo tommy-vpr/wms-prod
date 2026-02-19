@@ -1,0 +1,907 @@
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/apps/api/src/routes/cycle-count.routes.ts b/apps/api/src/routes/cycle-count.routes.ts
+--- a/apps/api/src/routes/cycle-count.routes.ts	2026-02-19 00:12:04.000000000 +0000
++++ b/apps/api/src/routes/cycle-count.routes.ts	2026-02-19 02:22:00.000000000 +0000
+@@ -7,6 +7,7 @@
+ import { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
+ import { CycleCountService } from "@wms/domain";
+ import { prisma } from "@wms/db";
++import { enqueueCheckBackorders } from "@wms/queue";
+ 
+ const cycleCountService = new CycleCountService(prisma);
+ 
+@@ -369,6 +370,35 @@
+       const { notes } = request.body;
+ 
+       const result = await cycleCountService.approve(sessionId, user.id, notes);
++
++      // ── Trigger backorder checks for variants with positive adjustment ─
++      try {
++        const lines = await prisma.cycleCountLine.findMany({
++          where: {
++            sessionId,
++            variance: { gt: 0 }, // more found than expected → new stock
++            productVariantId: { not: null },
++          },
++          select: { productVariantId: true },
++          distinct: ["productVariantId"],
++        });
++        for (const line of lines) {
++          if (line.productVariantId) {
++            await enqueueCheckBackorders({
++              productVariantId: line.productVariantId,
++              triggerSource: `cycle-count:${sessionId}`,
++            }).catch((err) =>
++              console.error(
++                `[CycleCount] Failed to enqueue backorder check:`,
++                err,
++              ),
++            );
++          }
++        }
++      } catch (err) {
++        console.error("[CycleCount] Backorder check trigger failed:", err);
++      }
++
+       return result;
+     },
+   );
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/apps/api/src/routes/inventory.routes.ts b/apps/api/src/routes/inventory.routes.ts
+--- a/apps/api/src/routes/inventory.routes.ts	2026-02-19 00:12:04.000000000 +0000
++++ b/apps/api/src/routes/inventory.routes.ts	2026-02-19 02:20:42.000000000 +0000
+@@ -7,6 +7,7 @@
+ 
+ import { FastifyPluginAsync } from "fastify";
+ import { prisma } from "@wms/db";
++import { enqueueCheckBackorders } from "@wms/queue";
+ import {
+   InventoryService,
+   InventoryUnitNotFoundError,
+@@ -775,6 +776,26 @@
+         request.body.newQuantity,
+         request.body.reason,
+       );
++
++      // ── Trigger backorder check if quantity increased ────────────────
++      if (result.adjustment > 0) {
++        const unit = await prisma.inventoryUnit.findUnique({
++          where: { id: request.params.id },
++          select: { productVariantId: true },
++        });
++        if (unit?.productVariantId) {
++          await enqueueCheckBackorders({
++            productVariantId: unit.productVariantId,
++            triggerSource: `adjustment:${request.params.id}`,
++          }).catch((err) =>
++            console.error(
++              `[Inventory] Failed to enqueue backorder check:`,
++              err,
++            ),
++          );
++        }
++      }
++
+       return reply.send({ success: true, ...result });
+     } catch (error) {
+       return handleError(error, reply);
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/apps/api/src/routes/order.route.ts b/apps/api/src/routes/order.route.ts
+--- a/apps/api/src/routes/order.route.ts	2026-02-19 00:12:04.000000000 +0000
++++ b/apps/api/src/routes/order.route.ts	2026-02-19 02:39:47.000000000 +0000
+@@ -167,28 +167,37 @@
+    * Get order statistics
+    */
+   app.get("/stats", async (request, reply) => {
+-    const [total, pending, allocated, picking, packed, shipped, onHold] =
+-      await Promise.all([
+-        prisma.order.count(),
+-        prisma.order.count({
+-          where: { status: { in: ["PENDING", "CONFIRMED"] } },
+-        }),
+-        prisma.order.count({
+-          where: {
+-            status: {
+-              in: ["ALLOCATED", "PARTIALLY_ALLOCATED", "READY_TO_PICK"],
+-            },
++    const [
++      total,
++      pending,
++      allocated,
++      picking,
++      packed,
++      shipped,
++      onHold,
++      backordered,
++    ] = await Promise.all([
++      prisma.order.count(),
++      prisma.order.count({
++        where: { status: { in: ["PENDING", "CONFIRMED"] } },
++      }),
++      prisma.order.count({
++        where: {
++          status: {
++            in: ["ALLOCATED", "PARTIALLY_ALLOCATED", "READY_TO_PICK"],
+           },
+-        }),
+-        prisma.order.count({
+-          where: { status: { in: ["PICKING", "PICKED"] } },
+-        }),
+-        prisma.order.count({
+-          where: { status: { in: ["PACKING", "PACKED"] } },
+-        }),
+-        prisma.order.count({ where: { status: "SHIPPED" } }),
+-        prisma.order.count({ where: { status: "ON_HOLD" } }),
+-      ]);
++        },
++      }),
++      prisma.order.count({
++        where: { status: { in: ["PICKING", "PICKED"] } },
++      }),
++      prisma.order.count({
++        where: { status: { in: ["PACKING", "PACKED"] } },
++      }),
++      prisma.order.count({ where: { status: "SHIPPED" } }),
++      prisma.order.count({ where: { status: "ON_HOLD" } }),
++      prisma.order.count({ where: { status: "BACKORDERED" } }),
++    ]);
+ 
+     return reply.send({
+       total,
+@@ -198,6 +207,7 @@
+       packed,
+       shipped,
+       onHold,
++      backordered,
+     });
+   });
+ 
+@@ -754,6 +764,30 @@
+       }
+     },
+   );
++
++  /**
++   * POST /orders/:id/split-backorder
++   * Split a partially allocated order: ship what's allocated, backorder the rest
++   */
++  app.post<{ Params: { id: string } }>(
++    "/:id/split-backorder",
++    async (request, reply) => {
++      const { id } = request.params;
++
++      try {
++        const result = await orderAllocationService.splitBackorder(id);
++
++        return reply.send({
++          success: true,
++          ...result,
++        });
++      } catch (error: any) {
++        console.error("[Orders] Split backorder error:", error);
++        const status = error.message.includes("not found") ? 404 : 400;
++        return reply.status(status).send({ error: error.message });
++      }
++    },
++  );
+ 
+   /**
+    * POST /orders/:orderId/items/:itemId/match
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/apps/api/src/routes/receiving.routes.ts b/apps/api/src/routes/receiving.routes.ts
+--- a/apps/api/src/routes/receiving.routes.ts	2026-02-19 00:12:04.000000000 +0000
++++ b/apps/api/src/routes/receiving.routes.ts	2026-02-19 02:20:18.000000000 +0000
+@@ -7,6 +7,7 @@
+ import { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
+ import { ReceivingService } from "@wms/domain";
+ import { prisma } from "@wms/db";
++import { enqueueCheckBackorders } from "@wms/queue";
+ 
+ export const receivingRoutes: FastifyPluginAsync = async (app) => {
+   const service = new ReceivingService(prisma);
+@@ -649,6 +650,27 @@
+ 
+       try {
+         const result = await service.approve(sessionId, userId);
++
++        // ── Trigger backorder checks for received variants ──────────────
++        const variantIds = [
++          ...new Set(
++            result.inventoryCreated
++              .map((i) => i.productVariantId)
++              .filter(Boolean),
++          ),
++        ];
++        for (const productVariantId of variantIds) {
++          await enqueueCheckBackorders({
++            productVariantId,
++            triggerSource: `receiving:${sessionId}`,
++          }).catch((err) =>
++            console.error(
++              `[Receiving] Failed to enqueue backorder check for ${productVariantId}:`,
++              err,
++            ),
++          );
++        }
++
+         return reply.send(result);
+       } catch (err: any) {
+         console.error("[Receiving] Approve error:", err);
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/apps/web/src/pages/orders/[id].tsx b/apps/web/src/pages/orders/[id].tsx
+--- a/apps/web/src/pages/orders/[id].tsx	2026-02-19 00:12:04.000000000 +0000
++++ b/apps/web/src/pages/orders/[id].tsx	2026-02-19 02:41:11.000000000 +0000
+@@ -31,6 +31,7 @@
+   Receipt,
+   Archive,
+   PauseCircle,
++  Scissors,
+   Tag,
+   Unlink,
+   ChevronDown,
+@@ -428,6 +429,21 @@
+     handleAction("cancel", `/orders/${order.id}/cancel`, "Order cancelled");
+   };
+ 
++  const handleSplitBackorder = async () => {
++    if (!order) return;
++    if (
++      !confirm(
++        "This will split the order: allocated items will ship now, unallocated items will become a new backorder. Continue?",
++      )
++    )
++      return;
++    handleAction(
++      "split",
++      `/orders/${order.id}/split-backorder`,
++      "Order split — backorder created for remaining items",
++    );
++  };
++
+   // ============================================================================
+   // Render
+   // ============================================================================
+@@ -593,7 +609,7 @@
+         <div className="bg-white border border-border rounded-lg p-4 mb-6">
+           <h2 className="font-semibold mb-3">Actions</h2>
+           <div className="flex flex-wrap gap-2">
+-            {["PENDING", "CONFIRMED"].includes(order.status) && (
++            {["PENDING", "CONFIRMED", "BACKORDERED"].includes(order.status) && (
+               <ActionButton
+                 onClick={handleAllocate}
+                 loading={actionLoading === "allocate"}
+@@ -601,7 +617,21 @@
+                 icon={Package}
+                 className="bg-blue-600 text-white hover:bg-blue-700"
+               >
+-                Allocate Inventory
++                {order.status === "BACKORDERED"
++                  ? "Retry Allocation"
++                  : "Allocate Inventory"}
++              </ActionButton>
++            )}
++
++            {["PARTIALLY_ALLOCATED"].includes(order.status) && (
++              <ActionButton
++                onClick={handleSplitBackorder}
++                loading={actionLoading === "split"}
++                disabled={!!actionLoading}
++                icon={Scissors}
++                className="bg-orange-600 text-white hover:bg-orange-700"
++              >
++                Split &amp; Ship Allocated
+               </ActionButton>
+             )}
+ 
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/apps/web/src/pages/orders/index.tsx b/apps/web/src/pages/orders/index.tsx
+--- a/apps/web/src/pages/orders/index.tsx	2026-02-19 00:12:04.000000000 +0000
++++ b/apps/web/src/pages/orders/index.tsx	2026-02-19 02:40:33.000000000 +0000
+@@ -21,6 +21,7 @@
+   CheckCircle,
+   AlertCircle,
+   XCircle,
++  PauseCircle,
+   MoreHorizontal,
+   Wifi,
+   WifiOff,
+@@ -66,6 +67,7 @@
+   | "PENDING"
+   | "ALLOCATED"
+   | "PARTIALLY_ALLOCATED"
++  | "BACKORDERED"
+   | "PICKING"
+   | "PICKED"
+   | "PACKING"
+@@ -81,6 +83,7 @@
+   picking: number;
+   packed: number;
+   shipped: number;
++  backordered: number;
+ }
+ 
+ const PAGE_SIZE = 20;
+@@ -108,6 +111,11 @@
+     color: "bg-orange-100 text-orange-800",
+     icon: AlertCircle,
+   },
++  BACKORDERED: {
++    label: "Backordered",
++    color: "bg-red-100 text-red-800",
++    icon: PauseCircle,
++  },
+   PICKING: {
+     label: "Picking",
+     color: "bg-purple-100 text-purple-800",
+@@ -196,24 +204,55 @@
+   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+   const refreshDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+ 
+-  // Auto-refresh orders list when new order:created events arrive
++  // Auto-refresh orders list when relevant events arrive
+   useEffect(() => {
+     if (!lastEvent) return;
+-    if (lastEvent.type !== "order:created") return;
+ 
+-    // Show toast notification
+-    const orderNumber =
+-      (lastEvent.payload?.orderNumber as string) || "New order";
+-    setToast({ orderNumber, id: lastEvent.id });
+-    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+-    toastTimeoutRef.current = setTimeout(() => setToast(null), 5000);
+-
+-    // Debounce refresh (in case multiple orders arrive rapidly)
+-    if (refreshDebounceRef.current) clearTimeout(refreshDebounceRef.current);
+-    refreshDebounceRef.current = setTimeout(() => {
+-      fetchOrdersSilent();
+-      fetchStats();
+-    }, 1500);
++    if (lastEvent.type === "order:created") {
++      // Show toast notification
++      const orderNumber =
++        (lastEvent.payload?.orderNumber as string) || "New order";
++      setToast({ orderNumber, id: lastEvent.id });
++      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
++      toastTimeoutRef.current = setTimeout(() => setToast(null), 5000);
++    }
++
++    if (lastEvent.type === "order:backorder_resolved") {
++      const orderNumber =
++        (lastEvent.payload?.orderNumber as string) || "Order";
++      setToast({ orderNumber: `${orderNumber} — backorder resolved ✓`, id: lastEvent.id });
++      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
++      toastTimeoutRef.current = setTimeout(() => setToast(null), 5000);
++    }
++
++    if (lastEvent.type === "order:split") {
++      const orderNumber =
++        (lastEvent.payload?.originalOrderNumber as string) || "Order";
++      const boNumber =
++        (lastEvent.payload?.backorderOrderNumber as string) || "";
++      setToast({
++        orderNumber: `${orderNumber} split → ${boNumber} created`,
++        id: lastEvent.id,
++      });
++      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
++      toastTimeoutRef.current = setTimeout(() => setToast(null), 5000);
++    }
++
++    // Debounce refresh for any order event
++    if (
++      [
++        "order:created",
++        "order:backordered",
++        "order:backorder_resolved",
++        "order:split",
++      ].includes(lastEvent.type)
++    ) {
++      if (refreshDebounceRef.current) clearTimeout(refreshDebounceRef.current);
++      refreshDebounceRef.current = setTimeout(() => {
++        fetchOrdersSilent();
++        fetchStats();
++      }, 1500);
++    }
+   }, [lastEvent]);
+ 
+   // Cleanup timeouts
+@@ -395,7 +434,7 @@
+ 
+       {/* Stats Cards */}
+       {stats && (
+-        <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
++        <div className="grid grid-cols-2 md:grid-cols-7 gap-4 mb-6">
+           <StatCard
+             label="Total"
+             value={stats.total}
+@@ -417,6 +456,13 @@
+             active={statusFilter === "ALLOCATED"}
+           />
+           <StatCard
++            label="Backordered"
++            value={stats.backordered}
++            color="red"
++            onClick={() => handleStatusFilter("BACKORDERED")}
++            active={statusFilter === "BACKORDERED"}
++          />
++          <StatCard
+             label="Picking"
+             value={stats.picking}
+             color="purple"
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/apps/worker/src/processors/order.processor.ts b/apps/worker/src/processors/order.processor.ts
+--- a/apps/worker/src/processors/order.processor.ts	2026-02-19 00:12:04.000000000 +0000
++++ b/apps/worker/src/processors/order.processor.ts	2026-02-19 02:21:18.000000000 +0000
+@@ -140,13 +140,18 @@
+       `[Orders] Found ${orderIds.length} backordered orders to retry`,
+     );
+ 
+-    for (const orderId of orderIds) {
++    // Stagger allocation jobs to reduce contention on the same inventory
++    for (let i = 0; i < orderIds.length; i++) {
+       await enqueueAllocateOrder({
+-        orderId,
++        orderId: orderIds[i],
+         allowPartial: true,
+-        idempotencyKey: `backorder-retry-${orderId}-${Date.now()}`,
++        idempotencyKey: `backorder-retry-${orderIds[i]}-${Date.now()}`,
+       });
+     }
++  } else {
++    console.log(
++      `[Orders] No backordered orders found for variant: ${productVariantId}`,
++    );
+   }
+ 
+   return { productVariantId, ordersFound: orderIds.length, orderIds };
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/apps/worker/src/processors/receiving.processor.ts b/apps/worker/src/processors/receiving.processor.ts
+--- a/apps/worker/src/processors/receiving.processor.ts	2026-02-19 00:12:04.000000000 +0000
++++ b/apps/worker/src/processors/receiving.processor.ts	2026-02-19 02:20:06.000000000 +0000
+@@ -854,6 +854,7 @@
+       sku: string;
+       quantity: number;
+       inventoryUnitId: string;
++      productVariantId: string;
+     }>;
+     putawayTask: { id: string; taskNumber: string };
+   }> {
+@@ -879,6 +880,7 @@
+           sku: string;
+           quantity: number;
+           inventoryUnitId: string;
++          productVariantId: string;
+         }> = [];
+ 
+         // Create/update inventory for each line
+@@ -924,6 +926,7 @@
+             sku: line.sku,
+             quantity: goodQuantity,
+             inventoryUnitId: unit.id,
++            productVariantId: line.productVariantId,
+           });
+ 
+           // Log inventory event
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/packages/domain/src/services/order-allocation.service.ts b/packages/domain/src/services/order-allocation.service.ts
+--- a/packages/domain/src/services/order-allocation.service.ts	2026-02-19 00:12:04.000000000 +0000
++++ b/packages/domain/src/services/order-allocation.service.ts	2026-02-19 02:39:19.000000000 +0000
+@@ -5,6 +5,8 @@
+  */
+ 
+ import { prisma } from "@wms/db";
++import { publish, EVENT_TYPES } from "@wms/pubsub";
++import { randomUUID } from "crypto";
+ 
+ // ============================================================================
+ // Types
+@@ -14,6 +16,7 @@
+   orderId: string;
+   orderNumber: string;
+   status: "ALLOCATED" | "PARTIALLY_ALLOCATED" | "BACKORDERED" | "ON_HOLD";
++  previousStatus?: string;
+   totalItems: number;
+   allocatedItems: number;
+   backorderedItems: number;
+@@ -141,6 +144,7 @@
+           orderId,
+           orderNumber: order.orderNumber,
+           status: "ON_HOLD",
++          previousStatus: order.status,
+           totalItems: order.items.length,
+           allocatedItems: 0,
+           backorderedItems: 0,
+@@ -295,10 +299,38 @@
+         },
+       });
+ 
++      // ── Audit events for backorder transitions ──────────────────────────
++      const previousStatus = order.status;
++      const becameBackordered =
++        newStatus === "BACKORDERED" && previousStatus !== "BACKORDERED";
++      const resolvedFromBackorder =
++        previousStatus === "BACKORDERED" && newStatus === "ALLOCATED";
++
++      if (becameBackordered || resolvedFromBackorder) {
++        await tx.fulfillmentEvent.create({
++          data: {
++            type: becameBackordered
++              ? "order:backordered"
++              : "order:backorder_resolved",
++            payload: {
++              orderId,
++              orderNumber: order.orderNumber,
++              previousStatus,
++              newStatus,
++              totalItems: order.items.length,
++              allocatedItems: totalAllocated,
++              backorderedItems: totalBackordered,
++              timestamp: new Date().toISOString(),
++            },
++          },
++        });
++      }
++
+       return {
+         orderId,
+         orderNumber: order.orderNumber,
+         status: newStatus,
++        previousStatus,
+         totalItems: order.items.length,
+         allocatedItems: totalAllocated,
+         backorderedItems: totalBackordered,
+@@ -306,13 +338,79 @@
+         allocations,
+       };
+     });
++
++    // ── Publish to real-time stream (outside transaction) ────────────────
++    try {
++      if (
++        result.status === "BACKORDERED" &&
++        result.previousStatus !== "BACKORDERED"
++      ) {
++        await publish({
++          id: randomUUID(),
++          type: EVENT_TYPES.ORDER_BACKORDERED,
++          orderId: result.orderId,
++          payload: {
++            orderNumber: result.orderNumber,
++            backorderedItems: result.backorderedItems,
++          },
++          timestamp: new Date().toISOString(),
++        });
++      } else if (
++        result.previousStatus === "BACKORDERED" &&
++        result.status === "ALLOCATED"
++      ) {
++        await publish({
++          id: randomUUID(),
++          type: EVENT_TYPES.ORDER_BACKORDER_RESOLVED,
++          orderId: result.orderId,
++          payload: {
++            orderNumber: result.orderNumber,
++            allocatedItems: result.allocatedItems,
++          },
++          timestamp: new Date().toISOString(),
++        });
++      }
++    } catch (err) {
++      console.error("[OrderAllocation] Pub/sub failed:", err);
++    }
++
++    return result;
+   }
+ 
+   /**
+-   * Find backordered/partially allocated orders that need a specific variant
+-   * Called when new inventory arrives (receiving, adjustments)
++   * Find backordered/partially allocated orders that need a specific variant.
++   * Called when new inventory arrives (receiving, adjustments).
++   *
++   * Escalates orders backordered for more than MAX_BACKORDER_DAYS to ON_HOLD
++   * so they don't retry forever.  Returns only non-stale orders for retry.
+    */
+   async checkBackorderedOrders(productVariantId: string): Promise<string[]> {
++    const MAX_BACKORDER_DAYS = 30;
++    const MAX_RETRY_BATCH = 20; // prevent queue floods
++
++    const cutoffDate = new Date();
++    cutoffDate.setDate(cutoffDate.getDate() - MAX_BACKORDER_DAYS);
++
++    // ── Escalate stale backorders to ON_HOLD ──────────────────────────────
++    await prisma.order.updateMany({
++      where: {
++        status: "BACKORDERED",
++        updatedAt: { lt: cutoffDate },
++        items: {
++          some: {
++            productVariantId,
++            matched: true,
++          },
++        },
++      },
++      data: {
++        status: "ON_HOLD",
++        holdReason: `Backordered for more than ${MAX_BACKORDER_DAYS} days — manual review required`,
++        holdAt: new Date(),
++      },
++    });
++
++    // ── Find eligible orders for retry ────────────────────────────────────
+     const orders = await prisma.order.findMany({
+       where: {
+         status: { in: ["BACKORDERED", "PARTIALLY_ALLOCATED"] },
+@@ -324,13 +422,217 @@
+         },
+       },
+       select: { id: true },
+-      orderBy: { createdAt: "asc" }, // FIFO - oldest orders first
++      orderBy: [
++        { priority: "asc" }, // EXPRESS < RUSH < STANDARD (alphabetical = correct priority order)
++        { createdAt: "asc" }, // FIFO within same priority
++      ],
++      take: MAX_RETRY_BATCH,
+     });
+ 
+     return orders.map((o) => o.id);
+   }
+ 
+   // ============================================================================
++  // Split Backorder — ship what's allocated, backorder the rest
++  // ============================================================================
++
++  async splitBackorder(orderId: string): Promise<{
++    originalOrderId: string;
++    originalOrderNumber: string;
++    originalStatus: string;
++    backorderOrderId: string;
++    backorderOrderNumber: string;
++    shippableItems: number;
++    backorderedItems: number;
++  }> {
++    const result = await prisma.$transaction(async (tx) => {
++      const order = await tx.order.findUnique({
++        where: { id: orderId },
++        include: {
++          items: {
++            include: {
++              allocations: {
++                where: {
++                  status: { in: ["ALLOCATED", "PARTIALLY_PICKED", "PICKED"] },
++                },
++              },
++            },
++          },
++        },
++      });
++
++      if (!order) throw new Error(`Order not found: ${orderId}`);
++
++      if (!["PARTIALLY_ALLOCATED", "BACKORDERED"].includes(order.status)) {
++        throw new Error(
++          `Order ${order.orderNumber} cannot be split (status: ${order.status}). ` +
++            `Only PARTIALLY_ALLOCATED or BACKORDERED orders can be split.`,
++        );
++      }
++
++      // Classify items: fully allocated vs needing backorder
++      const allocatedItems = order.items.filter(
++        (i) => i.quantityAllocated >= i.quantity,
++      );
++      const backorderItems = order.items.filter(
++        (i) => i.quantityAllocated < i.quantity,
++      );
++
++      if (allocatedItems.length === 0) {
++        throw new Error(
++          `Order ${order.orderNumber} has no allocated items to ship`,
++        );
++      }
++      if (backorderItems.length === 0) {
++        throw new Error(
++          `Order ${order.orderNumber} is fully allocated — no split needed`,
++        );
++      }
++
++      // Generate backorder order number
++      const backorderNumber = `${order.orderNumber}-BO1`;
++
++      // Create the backorder order with unallocated items
++      const backorderOrder = await tx.order.create({
++        data: {
++          orderNumber: backorderNumber,
++          shopifyOrderId: order.shopifyOrderId
++            ? `${order.shopifyOrderId}-BO`
++            : null,
++          customerId: order.customerId,
++          customerName: order.customerName,
++          customerEmail: order.customerEmail,
++          shippingAddress: order.shippingAddress as any,
++          billingAddress: order.billingAddress as any,
++          shopifyLineItems: null,
++          status: "BACKORDERED",
++          paymentStatus: order.paymentStatus,
++          priority: order.priority,
++          totalAmount: 0, // Will recalculate below
++          items: {
++            create: backorderItems.map((item) => {
++              const backorderQty = item.quantity - item.quantityAllocated;
++              return {
++                sku: item.sku,
++                productVariantId: item.productVariantId,
++                quantity: backorderQty,
++                quantityAllocated: 0,
++                quantityPicked: 0,
++                quantityShipped: 0,
++                unitPrice: item.unitPrice,
++                totalPrice: item.unitPrice.mul(backorderQty),
++                matched: item.matched,
++                matchError: item.matchError,
++                shopifyLineItemId: item.shopifyLineItemId,
++              };
++            }),
++          },
++        },
++      });
++
++      // Recalculate backorder total
++      const backorderTotal = backorderItems.reduce((sum, item) => {
++        const qty = item.quantity - item.quantityAllocated;
++        return sum + Number(item.unitPrice) * qty;
++      }, 0);
++
++      await tx.order.update({
++        where: { id: backorderOrder.id },
++        data: { totalAmount: backorderTotal },
++      });
++
++      // Update original order: reduce quantities to only allocated amounts
++      for (const item of backorderItems) {
++        if (item.quantityAllocated > 0) {
++          // Reduce quantity to what's allocated — item stays on original order
++          await tx.orderItem.update({
++            where: { id: item.id },
++            data: {
++              quantity: item.quantityAllocated,
++              totalPrice: item.unitPrice.mul(item.quantityAllocated),
++            },
++          });
++        } else {
++          // Nothing allocated — remove from original order entirely
++          // First release any allocations
++          await tx.allocation.updateMany({
++            where: { orderItemId: item.id },
++            data: { status: "RELEASED", releasedAt: new Date() },
++          });
++          await tx.orderItem.delete({ where: { id: item.id } });
++        }
++      }
++
++      // Recalculate original order total
++      const remainingItems = await tx.orderItem.findMany({
++        where: { orderId: order.id },
++      });
++      const originalTotal = remainingItems.reduce(
++        (sum, item) => sum + Number(item.unitPrice) * item.quantity,
++        0,
++      );
++
++      // Move original order to ALLOCATED (everything remaining is allocated)
++      await tx.order.update({
++        where: { id: order.id },
++        data: {
++          status: "ALLOCATED",
++          totalAmount: originalTotal,
++          holdReason: null,
++          holdAt: null,
++        },
++      });
++
++      // Audit event
++      await tx.fulfillmentEvent.create({
++        data: {
++          type: "order:split",
++          payload: {
++            originalOrderId: order.id,
++            originalOrderNumber: order.orderNumber,
++            backorderOrderId: backorderOrder.id,
++            backorderOrderNumber: backorderNumber,
++            shippableItems: allocatedItems.length,
++            backorderedItems: backorderItems.length,
++            timestamp: new Date().toISOString(),
++          },
++        },
++      });
++
++      return {
++        originalOrderId: order.id,
++        originalOrderNumber: order.orderNumber,
++        originalStatus: "ALLOCATED",
++        backorderOrderId: backorderOrder.id,
++        backorderOrderNumber: backorderNumber,
++        shippableItems: remainingItems.length,
++        backorderedItems: backorderItems.length,
++      };
++    });
++
++    // Publish real-time notification
++    try {
++      await publish({
++        id: randomUUID(),
++        type: EVENT_TYPES.ORDER_SPLIT,
++        orderId: result.originalOrderId,
++        payload: {
++          originalOrderNumber: result.originalOrderNumber,
++          backorderOrderNumber: result.backorderOrderNumber,
++          backorderOrderId: result.backorderOrderId,
++          shippableItems: result.shippableItems,
++          backorderedItems: result.backorderedItems,
++        },
++        timestamp: new Date().toISOString(),
++      });
++    } catch (err) {
++      console.error("[OrderAllocation] Split pub/sub failed:", err);
++    }
++
++    return result;
++  }
++
++  // ============================================================================
+   // Release allocations
+   // ============================================================================
+ 
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/packages/domain/src/services/receiving.service.ts b/packages/domain/src/services/receiving.service.ts
+--- a/packages/domain/src/services/receiving.service.ts	2026-02-19 00:12:04.000000000 +0000
++++ b/packages/domain/src/services/receiving.service.ts	2026-02-19 02:19:41.000000000 +0000
+@@ -854,6 +854,7 @@
+       sku: string;
+       quantity: number;
+       inventoryUnitId: string;
++      productVariantId: string;
+     }>;
+     putawayTask: { id: string; taskNumber: string };
+   }> {
+@@ -879,6 +880,7 @@
+           sku: string;
+           quantity: number;
+           inventoryUnitId: string;
++          productVariantId: string;
+         }> = [];
+ 
+         // Create/update inventory for each line
+@@ -924,6 +926,7 @@
+             sku: line.sku,
+             quantity: goodQuantity,
+             inventoryUnitId: unit.id,
++            productVariantId: line.productVariantId,
+           });
+ 
+           // Log inventory event
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/packages/pubsub/src/index.ts b/packages/pubsub/src/index.ts
+--- a/packages/pubsub/src/index.ts	2026-02-19 00:12:04.000000000 +0000
++++ b/packages/pubsub/src/index.ts	2026-02-19 02:37:40.000000000 +0000
+@@ -26,6 +26,9 @@
+   // Order lifecycle
+   ORDER_CREATED: "order:created",
+   ORDER_ALLOCATED: "order:allocated",
++  ORDER_BACKORDERED: "order:backordered",
++  ORDER_BACKORDER_RESOLVED: "order:backorder_resolved",
++  ORDER_SPLIT: "order:split",
+   ORDER_PROCESSING: "order:processing",
+   ORDER_PICKED: "order:picked",
+   ORDER_PACKED: "order:packed",
+diff -ruN '--exclude=.git' '--exclude=node_modules' a/packages/queue/src/queues.ts b/packages/queue/src/queues.ts
+--- a/packages/queue/src/queues.ts	2026-02-19 00:12:04.000000000 +0000
++++ b/packages/queue/src/queues.ts	2026-02-19 02:19:12.000000000 +0000
+@@ -498,7 +498,9 @@
+ }
+ 
+ /**
+- * Enqueue a job to check backordered orders when inventory is received
++ * Enqueue a job to check backordered orders when inventory is received.
++ * Uses dedup jobId so only one check runs per variant at a time.
++ * A 3-second delay batches rapid receiving scans into a single check.
+  */
+ export async function enqueueCheckBackorders(
+   data: CheckBackordersJobData,
+@@ -507,6 +509,9 @@
+   const queue = getOrdersQueue();
+   return queue.add(ORDER_JOBS.CHECK_BACKORDERS, data, {
+     ...DEFAULT_JOB_OPTIONS,
++    jobId: `check-backorders-${data.productVariantId}`,
++    delay: 3000, // 3s debounce — rapid scans collapse into one job
++    removeOnComplete: true,
+     ...options,
+   });
+ }

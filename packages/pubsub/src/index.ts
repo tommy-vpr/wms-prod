@@ -26,6 +26,9 @@ export const EVENT_TYPES = {
   // Order lifecycle
   ORDER_CREATED: "order:created",
   ORDER_ALLOCATED: "order:allocated",
+  ORDER_BACKORDERED: "order:backordered",
+  ORDER_BACKORDER_RESOLVED: "order:backorder_resolved",
+  ORDER_SPLIT: "order:split",
   ORDER_PROCESSING: "order:processing",
   ORDER_PICKED: "order:picked",
   ORDER_PACKED: "order:packed",

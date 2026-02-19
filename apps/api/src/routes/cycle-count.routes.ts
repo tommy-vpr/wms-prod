@@ -7,6 +7,7 @@
 import { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { CycleCountService } from "@wms/domain";
 import { prisma } from "@wms/db";
+import { enqueueCheckBackorders } from "@wms/queue";
 
 const cycleCountService = new CycleCountService(prisma);
 
@@ -369,6 +370,35 @@ const cycleCountRoutes: FastifyPluginAsync = async (app) => {
       const { notes } = request.body;
 
       const result = await cycleCountService.approve(sessionId, user.id, notes);
+
+      // ── Trigger backorder checks for variants with positive adjustment ─
+      try {
+        const lines = await prisma.cycleCountLine.findMany({
+          where: {
+            sessionId,
+            variance: { gt: 0 }, // more found than expected → new stock
+            productVariantId: { not: null },
+          },
+          select: { productVariantId: true },
+          distinct: ["productVariantId"],
+        });
+        for (const line of lines) {
+          if (line.productVariantId) {
+            await enqueueCheckBackorders({
+              productVariantId: line.productVariantId,
+              triggerSource: `cycle-count:${sessionId}`,
+            }).catch((err) =>
+              console.error(
+                `[CycleCount] Failed to enqueue backorder check:`,
+                err,
+              ),
+            );
+          }
+        }
+      } catch (err) {
+        console.error("[CycleCount] Backorder check trigger failed:", err);
+      }
+
       return result;
     },
   );

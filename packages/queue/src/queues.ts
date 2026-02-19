@@ -498,7 +498,9 @@ export async function enqueueReleaseAllocations(
 }
 
 /**
- * Enqueue a job to check backordered orders when inventory is received
+ * Enqueue a job to check backordered orders when inventory is received.
+ * Uses dedup jobId so only one check runs per variant at a time.
+ * A 3-second delay batches rapid receiving scans into a single check.
  */
 export async function enqueueCheckBackorders(
   data: CheckBackordersJobData,
@@ -507,6 +509,9 @@ export async function enqueueCheckBackorders(
   const queue = getOrdersQueue();
   return queue.add(ORDER_JOBS.CHECK_BACKORDERS, data, {
     ...DEFAULT_JOB_OPTIONS,
+    jobId: `check-backorders-${data.productVariantId}`,
+    delay: 3000, // 3s debounce — rapid scans collapse into one job
+    removeOnComplete: true,
     ...options,
   });
 }

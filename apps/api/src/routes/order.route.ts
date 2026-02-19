@@ -167,28 +167,37 @@ export const orderRoutes: FastifyPluginAsync = async (app) => {
    * Get order statistics
    */
   app.get("/stats", async (request, reply) => {
-    const [total, pending, allocated, picking, packed, shipped, onHold] =
-      await Promise.all([
-        prisma.order.count(),
-        prisma.order.count({
-          where: { status: { in: ["PENDING", "CONFIRMED"] } },
-        }),
-        prisma.order.count({
-          where: {
-            status: {
-              in: ["ALLOCATED", "PARTIALLY_ALLOCATED", "READY_TO_PICK"],
-            },
+    const [
+      total,
+      pending,
+      allocated,
+      picking,
+      packed,
+      shipped,
+      onHold,
+      backordered,
+    ] = await Promise.all([
+      prisma.order.count(),
+      prisma.order.count({
+        where: { status: { in: ["PENDING", "CONFIRMED"] } },
+      }),
+      prisma.order.count({
+        where: {
+          status: {
+            in: ["ALLOCATED", "PARTIALLY_ALLOCATED", "READY_TO_PICK"],
           },
-        }),
-        prisma.order.count({
-          where: { status: { in: ["PICKING", "PICKED"] } },
-        }),
-        prisma.order.count({
-          where: { status: { in: ["PACKING", "PACKED"] } },
-        }),
-        prisma.order.count({ where: { status: "SHIPPED" } }),
-        prisma.order.count({ where: { status: "ON_HOLD" } }),
-      ]);
+        },
+      }),
+      prisma.order.count({
+        where: { status: { in: ["PICKING", "PICKED"] } },
+      }),
+      prisma.order.count({
+        where: { status: { in: ["PACKING", "PACKED"] } },
+      }),
+      prisma.order.count({ where: { status: "SHIPPED" } }),
+      prisma.order.count({ where: { status: "ON_HOLD" } }),
+      prisma.order.count({ where: { status: "BACKORDERED" } }),
+    ]);
 
     return reply.send({
       total,
@@ -198,6 +207,7 @@ export const orderRoutes: FastifyPluginAsync = async (app) => {
       packed,
       shipped,
       onHold,
+      backordered,
     });
   });
 
@@ -751,6 +761,30 @@ export const orderRoutes: FastifyPluginAsync = async (app) => {
         return reply.send({ success: true });
       } catch (error: any) {
         return reply.status(400).send({ error: error.message });
+      }
+    },
+  );
+
+  /**
+   * POST /orders/:id/split-backorder
+   * Split a partially allocated order: ship what's allocated, backorder the rest
+   */
+  app.post<{ Params: { id: string } }>(
+    "/:id/split-backorder",
+    async (request, reply) => {
+      const { id } = request.params;
+
+      try {
+        const result = await orderAllocationService.splitBackorder(id);
+
+        return reply.send({
+          success: true,
+          ...result,
+        });
+      } catch (error: any) {
+        console.error("[Orders] Split backorder error:", error);
+        const status = error.message.includes("not found") ? 404 : 400;
+        return reply.status(status).send({ error: error.message });
       }
     },
   );
