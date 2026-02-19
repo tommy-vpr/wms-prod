@@ -144,7 +144,7 @@ export class OrderAllocationService {
           orderId,
           orderNumber: order.orderNumber,
           status: "ON_HOLD",
-          previousStatus: order.status as string,
+          previousStatus: order.status,
           totalItems: order.items.length,
           allocatedItems: 0,
           backorderedItems: 0,
@@ -330,13 +330,13 @@ export class OrderAllocationService {
         orderId,
         orderNumber: order.orderNumber,
         status: newStatus,
-        previousStatus: previousStatus as string,
+        previousStatus,
         totalItems: order.items.length,
         allocatedItems: totalAllocated,
         backorderedItems: totalBackordered,
         unmatchedItems: unmatchedItems.length,
         allocations,
-      } as OrderAllocationResult;
+      };
     });
 
     // ── Publish to real-time stream (outside transaction) ────────────────
